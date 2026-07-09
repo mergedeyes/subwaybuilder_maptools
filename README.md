@@ -29,8 +29,24 @@ GITHUB_TOKEN = "<Github_Token_Classic>"
 6. Set correct coordinates for airport points, opening Google Maps and entering the correct cords into ./raw_map_files/CITY_CODE/custom_hubs.json, running open_maps.py
 7. Generate the demand data, running generate_demand_qzm_local.py again.
 8. Create a config.json inside ./raw_map_files/CITY_CODE/ based on the [official documentation](https://www.subwaybuilder.com/docs/v1.0.0/api-reference/cities).
-9. Run "ship.py none", to create the ZIP file. (none: No version change, major: Bumb major version, minor: Bump minor version, patch: Bump patch version inside config.json)
-10. Import your ZIP into Railyard (locally) and test your map ingame.
-11. (Optional) Make changes to the demand configuration, description, etc.
-12. Publish your map to Github manually, OR:
-13. Edit the parameters of publish.py and automatically publish your map to your Github-Repo, also generating a update.json for your map automatically.
+```
+{
+    "name": "Frankfurt",
+    "code": "FRA",
+    "description": "Bring the subway to Frankfurt! Over 1.200.000 commuters want to go to their workplace and it's your job to get them there! Based on real-life demand data from mobilithek.info/offers/767359761906577408 (Latest access: 6th July 2026).",
+    "population": 1247000,
+    "initialViewState": {
+        "zoom": 16,
+        "latitude": 50.11,
+        "longitude": 8.67,
+        "bearing": 0
+    },
+    "creator": "MergedEyes",
+    "version": "1.0.4"
+}
+```
+10. Run "ship.py none", to create the ZIP file. (none: No version change, major: Bumb major version, minor: Bump minor version, patch: Bump patch version inside config.json)
+11. Import your ZIP into Railyard (locally) and test your map ingame.
+12. (Optional) Make changes to the demand configuration, description, etc.
+13. Publish your map to Github manually, OR:
+14. Edit the parameters of publish.py and automatically publish your map to your Github-Repo, also generating a update.json for your map automatically.
