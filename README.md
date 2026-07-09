@@ -24,14 +24,15 @@ GITHUB_TOKEN = "<Github_Token_Classic>"
 ## Running the scripts
 ### Precautions
 1. Install [depot](https://github.com/Subway-Builder-Modded/depot).
-2. Download a .osm.pbf file you want to use to extract the mapdata from [Geofabrik](https://download.geofabrik.de/index.html).
-3. Get your commuters data in the INSPIRE-Grid format. [Germany](https://mobilithek.info/offers/767359761906577408)
+2. Run "pip install -r requirements.txt"
+3. Download a .osm.pbf file you want to use to extract the mapdata from [Geofabrik](https://download.geofabrik.de/index.html).
+4. Get your commuters data in the INSPIRE-Grid format. [Germany](https://mobilithek.info/offers/767359761906577408)
 ### Running the scripts
-4. Get your initial map data with depot, running build.py
-5. Prepare the data, running generate_demand_qzm_local.py
-6. Set correct coordinates for airport points, opening Google Maps and entering the correct cords into ./raw_map_files/CITY_CODE/custom_hubs.json, running open_maps.py
-7. Generate the demand data, running generate_demand_qzm_local.py again.
-8. Create a config.json inside ./raw_map_files/CITY_CODE/ based on the [official documentation](https://www.subwaybuilder.com/docs/v1.0.0/api-reference/cities).
+5. Get your initial map data with depot, running build.py
+6. Prepare the data, running generate_demand_qzm_local.py
+7. Set correct coordinates for airport points, opening Google Maps and entering the correct cords into ./raw_map_files/CITY_CODE/custom_hubs.json, running open_maps.py
+8. Generate the demand data, running generate_demand_qzm_local.py again.
+9. Create a config.json inside ./raw_map_files/CITY_CODE/ based on the [official documentation](https://www.subwaybuilder.com/docs/v1.0.0/api-reference/cities).
 ```
 {
     "name": "Frankfurt",
