@@ -47,6 +47,6 @@ GITHUB_TOKEN = "<Github_Token_Classic>"
 ```
 10. Run "ship.py none", to create the ZIP file. (none: No version change, major: Bumb major version, minor: Bump minor version, patch: Bump patch version inside config.json)
 11. Import your ZIP into Railyard (locally) and test your map ingame.
-12. (Optional) Make changes to the demand configuration, description, etc.
+12. (Optional) Make changes to the map, demand configuration, description, etc. Run build.py (only if you change the initial map), generate_demand_qzm_local.py, ship.py <none/major/minor/patch> again.
 13. Publish your map to Github manually, OR:
-14. Edit the parameters of publish.py and automatically publish your map to your Github-Repo, also generating a update.json for your map automatically.
+14. Edit the parameters of publish.py and automatically publish your map to your Github-Repo, also generating a update.json for the SubwayBuilderModded Registry for your map automatically.
