@@ -1,5 +1,5 @@
 # Custom DEPOT Map Tools written in Python
-### Valid as of v1.0.4
+### Valid as of v1.1.0
 ---
 ## Setting up .env file
 ```
