@@ -44,9 +44,9 @@ if not RAW_BASE_DIR:
 # ==========================================
 # CONFIGURATION
 # ==========================================
-OUTPUT_FILE = f"RAW_BASE_DIR/{CITY_CODE}/demand_data.json"
-AIRPORT_GEOJSON = f"RAW_BASE_DIR/{CITY_CODE}/runways_taxiways.geojson"
-CUSTOM_HUBS_JSON = f"RAW_BASE_DIR/{CITY_CODE}/custom_hubs.json"
+OUTPUT_FILE = f"{RAW_BASE_DIR}/{CITY_CODE}/demand_data.json"
+AIRPORT_GEOJSON = f"{RAW_BASE_DIR}/{CITY_CODE}/runways_taxiways.geojson"
+CUSTOM_HUBS_JSON = f"{RAW_BASE_DIR}/{CITY_CODE}/custom_hubs.json"
 
 MAX_HUBS_PER_GRID = 100     # Increase this to get more bubbles per 1x1km cell
 MIN_ROUTE_SIZE = 10         # Minimum commuters per line
