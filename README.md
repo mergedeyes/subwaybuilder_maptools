@@ -20,6 +20,7 @@ RAW_BASE_DIR = "raw_map_files"
 OUTPUT_DIR = "Map_ZIPs"
 GITHUB_TOKEN = "<Github_Token_Classic>"
 ```
+- Some city codes can be found [here](https://archive.bresser.de/download/City_Codes/CityCodes_en_BRESSER_v082023a.pdf).
 ## Running the scripts
 ### Precautions
 1. Download a .osm.pbf file you want to use to extract the mapdata from [Geofabrik](https://download.geofabrik.de/index.html).
