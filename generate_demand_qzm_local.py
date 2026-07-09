@@ -37,12 +37,16 @@ COMMUTERS_CSV_FILE = os.getenv("CSV")
 if not COMMUTERS_CSV_FILE:
     raise ValueError("CSV is missing from your .env file!")
 
+RAW_BASE_DIR = os.getenv("RAW_BASE_DIR")
+if not RAW_BASE_DIR:
+    raise ValueError("RAW_BASE_DIR is missing from your .env file!")
+
 # ==========================================
 # CONFIGURATION
 # ==========================================
-OUTPUT_FILE = f"raw_map_files/{CITY_CODE}/demand_data.json"
-AIRPORT_GEOJSON = f"raw_map_files/{CITY_CODE}/runways_taxiways.geojson"
-CUSTOM_HUBS_JSON = f"raw_map_files/{CITY_CODE}/custom_hubs.json"
+OUTPUT_FILE = f"RAW_BASE_DIR/{CITY_CODE}/demand_data.json"
+AIRPORT_GEOJSON = f"RAW_BASE_DIR/{CITY_CODE}/runways_taxiways.geojson"
+CUSTOM_HUBS_JSON = f"RAW_BASE_DIR/{CITY_CODE}/custom_hubs.json"
 
 MAX_HUBS_PER_GRID = 100     # Increase this to get more bubbles per 1x1km cell
 MIN_ROUTE_SIZE = 10         # Minimum commuters per line
@@ -55,7 +59,7 @@ JOB_MERGE_RADIUS = 0.3
 AIRPORT_EDGE_SNAP_RADIUS_METERS = 1000
 
 # Ratio of commuters heading to 'special' buildings (0.2 = 20%)
-SPECIAL_DEMAND_SPLIT = 0.1
+SPECIAL_DEMAND_SPLIT = 0.2
 
 CAPACITY_JOBS = (500, 3000)
 CAPACITY_APARTMENTS = (50, 500)
