@@ -14,7 +14,7 @@ load_dotenv()
 
 # Load configuration from environment
 CITY_CODE = os.getenv("CITY_CODE")
-CUSTOM_HUBS_JSON = f"raw_map_files/{CITY_CODE}/custom_hubs.json"
+CUSTOM_HUBS_JSON = f"{os.getenv("RAW_BASE_DIR")}/{CITY_CODE}/custom_hubs.json"
 
 def open_url_detached(url):
     """
