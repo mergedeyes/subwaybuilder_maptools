@@ -1,4 +1,4 @@
-# Custom DEPOT Map Tools written in Python
+# Custom DEPOT Map Tools written in Python (BUILT FOR GERMANY, PLEASE MAKE SURE THAT OSM BUILDING TAGGING AND YOUR O/D MATRIX IS PRECISE)
 ### Valid as of v1.1.0
 ---
 ## Setting up .env file
