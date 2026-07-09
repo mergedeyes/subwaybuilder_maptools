@@ -1,3 +1,5 @@
+# CUSTOM DEPOT BUILD.PY
+
 import os
 from dotenv import load_dotenv
 from depot.maps import MapGen
@@ -15,13 +17,16 @@ if not city_code:
 osmpbf_file = os.getenv("OSMPBF")
 if not osmpbf_file:
     raise ValueError("OSMPBF is missing from your .env file!")
+RAW_BASE_DIR = os.getenv("RAW_BASE_DIR")
+if not RAW_BASE_DIR:
+    raise ValueError("RAW_BASE_DIR is missing from your .env file!")
 
 map_builder = MapGen(
     city=city_code,
     bbox=bbox, 
     
     osmpbf=osmpbf_file, 
-    outputdir="raw_map_files",
+    outputdir=RAW_BASE_DIR,
     
     cities=['city', 'town', 'village', 'county'],      
     suburbs=['borough', 'suburb', 'islet', 'isolated_dwelling'],                                         

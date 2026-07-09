@@ -1,3 +1,5 @@
+# TOOL TO CREATE GAME-READY ZIP FILES
+
 import argparse
 import zipfile
 import json
