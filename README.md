@@ -23,8 +23,9 @@ GITHUB_TOKEN = "<Github_Token_Classic>"
 - Some city codes can be found [here](https://archive.bresser.de/download/City_Codes/CityCodes_en_BRESSER_v082023a.pdf).
 ## Running the scripts
 ### Precautions
-1. Download a .osm.pbf file you want to use to extract the mapdata from [Geofabrik](https://download.geofabrik.de/index.html).
-2. Get your commuters data in the INSPIRE-Grid format. [Germany](https://mobilithek.info/offers/767359761906577408)
+1. Install [depot](https://github.com/Subway-Builder-Modded/depot).
+2. Download a .osm.pbf file you want to use to extract the mapdata from [Geofabrik](https://download.geofabrik.de/index.html).
+3. Get your commuters data in the INSPIRE-Grid format. [Germany](https://mobilithek.info/offers/767359761906577408)
 ### Running the scripts
 4. Get your initial map data with depot, running build.py
 5. Prepare the data, running generate_demand_qzm_local.py
