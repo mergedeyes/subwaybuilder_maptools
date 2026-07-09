@@ -42,7 +42,7 @@ GITHUB_TOKEN = "<Github_Token_Classic>"
         "bearing": 0
     },
     "creator": "MergedEyes",
-    "version": "1.0.4"
+    "version": "1.0.0"
 }
 ```
 10. Run "ship.py none", to create the ZIP file. (none: No version change, major: Bumb major version, minor: Bump minor version, patch: Bump patch version inside config.json)
