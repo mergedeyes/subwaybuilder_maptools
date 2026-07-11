@@ -8,9 +8,10 @@ import subprocess
 import os
 import sys
 import csv
+import requests
 from pyproj import Transformer
 from dotenv import load_dotenv
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 1. Load the environment variables first
 load_dotenv()
@@ -30,7 +31,7 @@ if not OSMPBF_FILE:
     raise ValueError("OSMPBF is missing from your .env file!")
 
 OPL_CLEANED_FILE = os.getenv("OPL")
-if not OSMPBF_FILE:
+if not OPL_CLEANED_FILE:
     raise ValueError("OPL is missing from your .env file!")
 
 COMMUTERS_CSV_FILE = os.getenv("CSV")
@@ -40,6 +41,9 @@ if not COMMUTERS_CSV_FILE:
 RAW_BASE_DIR = os.getenv("RAW_BASE_DIR")
 if not RAW_BASE_DIR:
     raise ValueError("RAW_BASE_DIR is missing from your .env file!")
+
+# OSRM Endpoint with a default fallback
+OSRM_URL = os.getenv("OSRM_URL", "http://localhost:5000")
 
 # ==========================================
 # CONFIGURATION
@@ -75,7 +79,6 @@ RESIDENTIAL_TAGS = {
     'house', 'detached', 'semidetached_house', 'residential', 'terrace', 'bungalow', 'hotel'
 }
 
-# New sets specifically targeting keys rather than just the 'building' tag
 SPECIAL_AMENITIES = {'hospital', 'clinic', 'school', 'university', 'college', 'ferry_terminal'}
 SPECIAL_LEISURE = {'park', 'nature_reserve', 'stadium', 'sports_centre', 'water_park'}
 SPECIAL_TOURISM = {'theme_park', 'zoo', 'aquarium'}
@@ -83,7 +86,6 @@ SPECIAL_TOURISM = {'theme_park', 'zoo', 'aquarium'}
 JOB_INDICATOR_KEYS = {'amenity', 'shop', 'office'}
 
 def prepare_cleaned_pbf(raw_file, cleaned_file):
-    # We now target an OPL file for the final high-speed read
     opl_file = cleaned_file.replace(".osm.pbf", ".opl")
     
     if os.path.exists(opl_file):
@@ -92,12 +94,10 @@ def prepare_cleaned_pbf(raw_file, cleaned_file):
 
     print(f"Preparing map data (Extract -> Filter -> Convert)...")
     
-    # 1. Extract BBOX to reduce file size significantly
     bbox_str = f"{BBOX_MIN_LON},{BBOX_MIN_LAT},{BBOX_MAX_LON},{BBOX_MAX_LAT}"
     extract_file = "city_extract.osm.pbf"
     subprocess.run(["osmium", "extract", "-b", bbox_str, raw_file, "-o", extract_file, "--overwrite"], check=True)
 
-    # 2. Filter tags on the extracted file
     temp_filtered = "city_filtered.osm.pbf"
     tags_filter = [
         "nwr/building=*", "nwr/amenity=*", "nwr/shop=*", "nwr/office=*",
@@ -107,11 +107,9 @@ def prepare_cleaned_pbf(raw_file, cleaned_file):
     ]
     subprocess.run(["osmium", "tags-filter", extract_file] + tags_filter + ["-o", temp_filtered, "--overwrite"], check=True)
 
-    # 3. Convert to OPL for instant Python loading
     print(f"Converting to OPL format for high-speed parsing...")
     subprocess.run(["osmium", "cat", temp_filtered, "-o", opl_file, "--overwrite"], check=True)
     
-    # Cleanup intermediate PBF files to save space
     os.remove(extract_file)
     os.remove(temp_filtered)
     
@@ -137,7 +135,6 @@ class OSMHandler(osmium.SimpleHandler):
         if b_type in ['houseboat', 'boathouse', 'floating_home']:
             return
 
-        # Check standard building tags or our newly allowed special demand keys
         is_special = (
             (tags.get('amenity') in SPECIAL_AMENITIES) or
             (tags.get('leisure') in SPECIAL_LEISURE) or
@@ -200,7 +197,6 @@ def cluster_organic(nodes, radius_km):
         if id(n) in processed: continue
         bx, by = int(n["lat"] / bucket_size), int(n["lon"] / bucket_size)
         
-        # Initialize cluster with the root node's special status
         cluster = {
             "lat": n["lat"], "lon": n["lon"], 
             "capacity": n["capacity"], 
@@ -217,7 +213,6 @@ def cluster_organic(nodes, radius_km):
                     dist = math.sqrt((cluster["lat"] - neighbor["lat"])**2 + (cluster["lon"] - neighbor["lon"])**2)
                     if dist < radius_deg:
                         cluster["capacity"] += neighbor["capacity"]
-                        # If a neighbor is special, the whole cluster becomes a special destination
                         if neighbor.get("is_special"):
                             cluster["is_special"] = True
                         processed.add(id(neighbor))
@@ -265,14 +260,10 @@ def build_demand():
     print(f"Result: {len(final_job_nodes):,} organic job hubs.")
 
     print("\nGenerating demand points...")
-
     print("Initializing EPSG:3035 Transformer...", end=" ", flush=True)
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3035", always_xy=True)
     print("OK")
 
-    # =========================================================
-    # REVISED: INTERACTIVE MULTI-AIRPORT CONFIG & SNAPPING
-    # =========================================================
     if os.path.exists(AIRPORT_GEOJSON):
         print(f"Parsing Airport data from {AIRPORT_GEOJSON}...", end=" ", flush=True)
         with open(AIRPORT_GEOJSON, 'r') as f:
@@ -366,7 +357,6 @@ def build_demand():
                     print(f"\n[ERROR] {CUSTOM_HUBS_JSON} is invalid JSON. Please fix it or delete it.")
                     sys.exit(1)
                     
-            # Merge detected airports with config file
             for ap_id, def_data in detected_airports.items():
                 if ap_id not in custom_hubs_data.get("airports", {}):
                     custom_hubs_data.setdefault("airports", {})[ap_id] = def_data
@@ -396,7 +386,6 @@ def build_demand():
                 
             print("OK (Custom coordinates loaded)")
             
-            # --- SNAPPING & HUB CREATION ---
             surviving_job_nodes = []
             for node in final_job_nodes:
                 nx, ny = transformer.transform(node["lon"], node["lat"])
@@ -426,8 +415,8 @@ def build_demand():
                     
                     surviving_job_nodes.append({
                         "id": ap["id"],
-                        "lat": olat,      # Injecting the manual coords
-                        "lon": olon,      # Injecting the manual coords
+                        "lat": olat,      
+                        "lon": olon,      
                         "capacity": ap["capacity"],
                         "is_airport": True,
                         "grids": ap["grids"]
@@ -438,8 +427,6 @@ def build_demand():
             print(f"  -> Generated {active_airports_count} mapped Airport Mega-Hubs.")
     else:
         print(f"Airport GeoJSON '{AIRPORT_GEOJSON}' not found. Skipping airport snapping.")
-
-    # =========================================================
 
     points, pops = [], []
     for i, item in enumerate(final_job_nodes):
@@ -452,7 +439,7 @@ def build_demand():
                 "popIds": [],
                 "is_airport": True,
                 "grids": item["grids"],
-                "is_special": item.get("is_special", False) # Airports can be forced to special later
+                "is_special": item.get("is_special", False) 
             })
         else:
             points.append({
@@ -461,7 +448,7 @@ def build_demand():
                 "jobs": item["capacity"], 
                 "residents": 0, 
                 "popIds": [],
-                "is_special": item.get("is_special", False) # <--- THIS WAS MISSING
+                "is_special": item.get("is_special", False) 
             })
     
     for item in final_home_nodes:
@@ -471,11 +458,8 @@ def build_demand():
             "jobs": 0, 
             "residents": item["capacity"], 
             "popIds": [],
-            "is_special": False # <--- Ensure homes default to False
+            "is_special": False 
         })
-
-    home_list = [p for p in points if p["residents"] > 0]
-    job_list = [p for p in points if p["jobs"] > 0]
 
     print("Mapping OSM buildings to the INSPIRE 1x1km Grid...", end=" ", flush=True)
     grid_homes, grid_jobs = {}, {}
@@ -487,7 +471,6 @@ def build_demand():
         
     for j in [p for p in points if p["jobs"] > 0]:
         is_special = j.get("is_special", False)
-        # Treat airports as special destinations to guarantee they get 50% of incoming grid demand
         if j.get("is_airport"): is_special = True 
         
         if j.get("is_airport"):
@@ -506,16 +489,16 @@ def build_demand():
     print("OK")
     print(f"Mapped {len(grid_homes)} residential grids and {len(grid_jobs)} job grids.")
     
-    raw_pops = []
-    print(f"\nParsing real-world commuter matrix from {COMMUTERS_CSV_FILE}...", end=" ", flush=True)
+    # NEW: We will pool pending routes here first instead of parsing them immediately
+    pending_routes = []
     
+    print(f"\nParsing real-world commuter matrix from {COMMUTERS_CSV_FILE}...", end=" ", flush=True)
     try:
         with open(COMMUTERS_CSV_FILE, mode='r', encoding='utf-8') as f:
             reader = csv.reader(f)
             headers = next(reader)
             wo_idx, ao_idx, pendler_idx = headers.index("wo_1km"), headers.index("ao_1km"), headers.index("gesamtpendler")
 
-            # DEFINE THE FUNCTION ONCE HERE, OUTSIDE THE LOOP
             def assign_commuters(target_jobs, target_count, current_homes):
                 if target_count == 0 or not target_jobs: return
                 max_affordable = target_count // MIN_ROUTE_SIZE
@@ -530,19 +513,19 @@ def build_demand():
                 jobs_sorted = sorted(target_jobs, key=lambda x: x.get("jobs", 0), reverse=True)
 
                 for h, j in zip(homes_sorted[:num_conn], jobs_sorted[:num_conn]):
-                    dist = math.hypot(h["location"][0] - j["location"][0], h["location"][1] - j["location"][1]) * 111000
-                    pop_id = f"pop_{len(raw_pops):03d}"
-                    raw_pops.append(({
-                        "id": pop_id, "residenceId": h["id"], "jobId": j["id"],
-                        "drivingSeconds": int(dist / 8.3), "drivingDistance": int(dist)
-                    }, h, j, commuters_per_route))
+                    pop_id = f"pop_{len(pending_routes):06d}"
+                    pending_routes.append({
+                        "pop_id": pop_id,
+                        "h": h,
+                        "j": j,
+                        "commuters_per_route": commuters_per_route
+                    })
 
-            # START THE LOOP
             for row in reader:
                 if len(row) < 3: continue
                 count = int(row[pendler_idx])
                 if count < MIN_COMMUTER_THRESHOLD: continue 
-                if len(raw_pops) >= MAX_ROUTES_LIMIT: break
+                if len(pending_routes) >= MAX_ROUTES_LIMIT: break
 
                 wo, ao = row[wo_idx], row[ao_idx]
                 if wo in grid_homes and ao in grid_jobs:
@@ -553,7 +536,6 @@ def build_demand():
                     if not homes_in_cell: continue
                     if not jobs_normal and not jobs_special: continue
 
-                    # Calculate 50/50 split based on availability
                     if jobs_special and jobs_normal:
                         special_count = int(count * SPECIAL_DEMAND_SPLIT)
                         normal_count = count - special_count
@@ -564,16 +546,73 @@ def build_demand():
                         special_count = 0
                         normal_count = count
 
-                    # Fire routing logic for both pools
                     assign_commuters(jobs_special, special_count, homes_in_cell)
                     assign_commuters(jobs_normal, normal_count, homes_in_cell)
 
         print("OK")
-        print(f"Successfully generated {len(raw_pops):,} routes!")
+        print(f"Prepared {len(pending_routes):,} total route queries.")
     except FileNotFoundError:
         print("ERROR")
         print(f"\n[ERROR] '{COMMUTERS_CSV_FILE}' not found. Please place it in the root-directory of this script.")
         return
+
+    # =========================================================
+    # NEW: THREADED OSRM FETCHING
+    # =========================================================
+    print(f"\nResolving precise distances and times via OSRM ({OSRM_URL})...")
+    
+    session = requests.Session()
+    raw_pops = []
+    
+    def process_route_query(route_data):
+        h = route_data["h"]
+        j = route_data["j"]
+        src_lon, src_lat = h["location"][0], h["location"][1]
+        dst_lon, dst_lat = j["location"][0], j["location"][1]
+        
+        duration = 0
+        distance = 0
+        
+        # 1. Try hitting the OSRM backend
+        try:
+            url = f"{OSRM_URL}/route/v1/driving/{src_lon},{src_lat};{dst_lon},{dst_lat}?overview=false"
+            response = session.get(url, timeout=2.0)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("code") == "Ok" and len(data.get("routes", [])) > 0:
+                    route_info = data["routes"][0]
+                    duration = int(route_info.get("duration", 0))
+                    distance = int(route_info.get("distance", 0))
+        except requests.RequestException:
+            pass
+            
+        # 2. Fallback to straight-line Euclidean math if OSRM failed, timed out, or returned no valid route
+        if distance == 0:
+            dist = math.hypot(src_lon - dst_lon, src_lat - dst_lat) * 111000
+            distance = int(dist)
+            duration = int(dist / 8.3)
+            
+        return ({
+            "id": route_data["pop_id"], 
+            "residenceId": h["id"], 
+            "jobId": j["id"],
+            "drivingSeconds": duration, 
+            "drivingDistance": distance
+        }, h, j, route_data["commuters_per_route"])
+
+    # Map the queries to a thread pool to avoid massive bottlenecks
+    # Tweak max_workers depending on how capable your OSRM machine/container is
+    completed_count = 0
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        futures = {executor.submit(process_route_query, task): task for task in pending_routes}
+        
+        for future in as_completed(futures):
+            raw_pops.append(future.result())
+            completed_count += 1
+            if completed_count % 10000 == 0:
+                print(f" -> Resolved {completed_count:,}/{len(pending_routes):,} routes...")
+
+    print("OK - OSRM Routing Complete")
 
     print("\nApplying strict real-world commuter counts to physical buildings...", end=" ", flush=True)
 
