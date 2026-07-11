@@ -21,6 +21,7 @@ RAW_BASE_DIR = "raw_map_files"
 # ZIP DESTINATION DIRECTORY
 OUTPUT_DIR = "Map_ZIPs"
 GITHUB_TOKEN = "<Github_Token_Classic>"
+OSRM_URL= "http://localhost:5000"
 ```
 - Some city codes can be found [here](https://archive.bresser.de/download/City_Codes/CityCodes_en_BRESSER_v082023a.pdf).
 ## Running the scripts
