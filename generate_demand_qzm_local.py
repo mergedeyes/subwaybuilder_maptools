@@ -9,6 +9,8 @@ import os
 import sys
 import csv
 import requests
+import time
+import shutil
 from pyproj import Transformer
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,20 +44,25 @@ RAW_BASE_DIR = os.getenv("RAW_BASE_DIR")
 if not RAW_BASE_DIR:
     raise ValueError("RAW_BASE_DIR is missing from your .env file!")
 
-OSRM_URL = os.getenv("OSRM_URL", "http://localhost:5000")
+OSRM_URL = os.getenv("OSRM_URL")
+if not OSRM_URL:
+    raise ValueError("OSRM_URL is missing from your .env file!")
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
-OUTPUT_FILE = f"{RAW_BASE_DIR}/{CITY_CODE}/demand_data.json"
-AIRPORT_GEOJSON = f"{RAW_BASE_DIR}/{CITY_CODE}/runways_taxiways.geojson"
-CUSTOM_HUBS_JSON = f"{RAW_BASE_DIR}/{CITY_CODE}/custom_hubs.json"
+CITY_RAW_DIR = f"{RAW_BASE_DIR}/{CITY_CODE}/"
+
+OUTPUT_FILE = f"{CITY_RAW_DIR}demand_data.json"
+AIRPORT_GEOJSON = f"{CITY_RAW_DIR}runways_taxiways.geojson"
+CUSTOM_HUBS_JSON = f"{CITY_RAW_DIR}custom_hubs.json"
 
 MAX_HUBS_PER_GRID = 100     
 MIN_ROUTE_SIZE = 10         
 MIN_COMMUTER_THRESHOLD = 10 
 
 MAX_ROUTES_LIMIT = 200_000     
+MAX_CONNECTIONS_PER_JOB = 200   # Cap on residential hubs pointing to a single job hub
 
 RES_MERGE_RADIUS = 0.2          
 JOB_MERGE_RADIUS = 0.3
@@ -83,11 +90,9 @@ SPECIAL_TOURISM = {'theme_park', 'zoo', 'aquarium'}
 
 JOB_INDICATOR_KEYS = {'amenity', 'shop', 'office'}
 
-def prepare_cleaned_pbf(raw_file, cleaned_file):
-    opl_file = cleaned_file.replace(".osm.pbf", ".opl")
-    
-    if os.path.exists(opl_file):
-        print(f"Optimized OPL file '{opl_file}' exists. Skipping preparation.")
+def prepare_cleaned_pbf(raw_file, cleaned_file):    
+    if os.path.exists(cleaned_file):
+        print(f"Optimized OPL file '{cleaned_file}' exists. Skipping preparation.")
         return True
 
     print(f"Preparing map data (Extract -> Filter -> Convert)...")
@@ -97,16 +102,19 @@ def prepare_cleaned_pbf(raw_file, cleaned_file):
     subprocess.run(["osmium", "extract", "-b", bbox_str, raw_file, "-o", extract_file, "--overwrite"], check=True)
 
     temp_filtered = "city_filtered.osm.pbf"
+    
+    # Adding landuse extraction to the filter
     tags_filter = [
         "nwr/building=*", "nwr/amenity=*", "nwr/shop=*", "nwr/office=*",
         "nwr/leisure=park,nature_reserve,stadium,sports_centre,water_park",
         "nwr/tourism=theme_park,zoo,aquarium",
-        "nwr/boundary=national_park"
+        "nwr/boundary=national_park",
+        "nwr/landuse=commercial,industrial,retail"
     ]
     subprocess.run(["osmium", "tags-filter", extract_file] + tags_filter + ["-o", temp_filtered, "--overwrite"], check=True)
 
     print(f"Converting to OPL format for high-speed parsing...")
-    subprocess.run(["osmium", "cat", temp_filtered, "-o", opl_file, "--overwrite"], check=True)
+    subprocess.run(["osmium", "cat", temp_filtered, "-o", f"{CITY_RAW_DIR}{cleaned_file}", "--overwrite"], check=True)
     
     os.remove(extract_file)
     os.remove(temp_filtered)
@@ -119,6 +127,7 @@ class OSMHandler(osmium.SimpleHandler):
         super().__init__()
         self.raw_job_nodes = []
         self.raw_home_nodes = []
+        self.raw_landuse = []
         self.min_lat, self.max_lat = float('inf'), float('-inf')
         self.min_lon, self.max_lon = float('inf'), float('-inf')
 
@@ -126,6 +135,17 @@ class OSMHandler(osmium.SimpleHandler):
         if not (BBOX_MIN_LAT <= lat <= BBOX_MAX_LAT and BBOX_MIN_LON <= lon <= BBOX_MAX_LON):
             return
             
+        if lat < self.min_lat: self.min_lat = lat
+        if lat > self.max_lat: self.max_lat = lat
+        if lon < self.min_lon: self.min_lon = lon
+        if lon > self.max_lon: self.max_lon = lon
+        
+        # Parse landuse for synthetic spawning
+        landuse = tags.get('landuse')
+        if landuse in ['commercial', 'industrial', 'retail']:
+            self.raw_landuse.append({"lat": lat, "lon": lon, "type": landuse})
+            return # Don't double count landuse polygons as physical buildings unless they have building tags
+
         if tags.get('floating') == 'yes' or tags.get('location') in ['water', 'underwater']:
             return
             
@@ -150,11 +170,6 @@ class OSMHandler(osmium.SimpleHandler):
         if not is_job and not is_home:
             return
 
-        if lat < self.min_lat: self.min_lat = lat
-        if lat > self.max_lat: self.max_lat = lat
-        if lon < self.min_lon: self.min_lon = lon
-        if lon > self.max_lon: self.max_lon = lon
-        
         if is_job:
             self.raw_job_nodes.append({
                 "id": elem_id, "lat": lat, "lon": lon, 
@@ -223,13 +238,80 @@ def cluster_organic(nodes, radius_km):
         })
     return final_clusters
 
+def initialize_map_data():
+    target_dir = "raw_map_files/data_osrm"
+    target_full_path = os.path.abspath(target_dir)
+    # Set project_root to data_osrm directory
+    project_root = target_full_path
+    os.makedirs(target_full_path, exist_ok=True)
+
+    
+    # Check if OSMPBF_FILE file symlink already exists inside target_full_path
+    if not os.path.exists(os.path.join(target_full_path, OSMPBF_FILE)):
+        print(f"{OSMPBF_FILE} is not present in {target_dir}, copying...")
+        shutil.copy(os.path.join(os.getcwd(), OSMPBF_FILE), os.path.join(target_full_path, OSMPBF_FILE))
+    
+    # Paths relative to the container mount point /data
+    pbf_input = f"/data/{OSMPBF_FILE}"
+    osrm_output_base = f"/data/germany-latest"
+    
+    if os.path.exists(f"{target_full_path}/germany-latest.osrm.cell_metrics"):
+        print("OSRM map data files already exist. Skipping generation.")
+    else:
+        try:
+            print(f"Generating OSRM map data in {target_dir}...")
+            
+            if not os.path.exists(os.path.join(target_full_path, "germany-latest.osrm")):
+                # 1. Extract: Use -w /data/raw_map_files/data_osrm
+                subprocess.run(["docker", "run", "--rm", "-t", "-v", f"{project_root}:/data", 
+                                "-w", f"{target_full_path}", "osrm/osrm-backend", 
+                                "osrm-extract", pbf_input, "-p", "/opt/car.lua"], check=True)
+            
+            if not os.path.exists(os.path.join(target_full_path, "germany-latest.osrm.partition")):
+                # 2. Partition: Target the output in the subfolder
+                subprocess.run(["docker", "run", "--rm", "-t", "-v", f"{project_root}:/data", 
+                                "-w", f"{target_full_path}", "osrm/osrm-backend", "osrm-partition", f"{osrm_output_base}.osrm"], check=True)
+            
+            if not os.path.exists(os.path.join(target_full_path, "germany-latest.osrm.cell_metrics")):
+                # 3. Customize: Target the output in the subfolder
+                subprocess.run(["docker", "run", "--rm", "-t", "-v", f"{project_root}:/data", 
+                                "-w", f"{target_full_path}", "osrm/osrm-backend", "osrm-customize", f"{osrm_output_base}.osrm"], check=True)
+        finally:
+            print("Map data generation complete.")
+    return target_full_path, osrm_output_base
+
+def start_osrm_container():
+    target_full_path, osrm_output_base = initialize_map_data()
+    
+    print("Starting OSRM backend container...")
+    subprocess.run(["docker", "run", "-d", "--name", "osrm-backend", "--network", "host", 
+                    "-v", f"{target_full_path}:/data", "-w", f"{target_full_path}", "osrm/osrm-backend", 
+                    "osrm-routed", "--algorithm", "mld", f"{osrm_output_base}.osrm"], check=True)
+    
+    # Poll until ready
+    print("Waiting for OSRM to load map into memory...", end="", flush=True)
+    for i in range(60): # Try for 60 seconds
+        try:
+            if requests.get(f"{OSRM_URL}/route/v1/driving/8.4,49.0;8.5,49.1", timeout=1).status_code == 200:
+                print(" Ready!")
+                return
+        except:
+            print(".", end="", flush=True)
+            time.sleep(1)
+    raise RuntimeError("OSRM container failed to start in time.")
+
+def stop_osrm_container():
+    print("\nStopping and removing OSRM container...")
+    subprocess.run(["docker", "stop", "osrm-backend"], check=True)
+    subprocess.run(["docker", "rm", "osrm-backend"], check=True)
+
 def build_demand():
-    if not prepare_cleaned_pbf(OSMPBF_FILE, OPL_CLEANED_FILE):
+    if not prepare_cleaned_pbf(OSMPBF_FILE, f"{CITY_RAW_DIR}{OPL_CLEANED_FILE}"):
         return 
 
-    print(f"\nLoading '{OPL_CLEANED_FILE}'...", end=" ", flush=True)
+    print(f"\nLoading '{CITY_RAW_DIR}{OPL_CLEANED_FILE}'...", end=" ", flush=True)
     handler = OSMHandler()
-    handler.apply_file(OPL_CLEANED_FILE, locations=True)
+    handler.apply_file(f"{CITY_RAW_DIR}{OPL_CLEANED_FILE}", locations=True)
     print("OK")
 
     if not handler.raw_home_nodes and not handler.raw_job_nodes:
@@ -243,6 +325,7 @@ def build_demand():
     
     print(f"\nMap Bounds Detected: {width_km:.1f}km x {height_km:.1f}km")
     print(f"Total Area: {map_area_sqkm:.1f} sq/km")
+    print(f"Extracted {len(handler.raw_landuse):,} commercial/industrial zones for procedural overflow.")
 
     print(f"Clustering {len(handler.raw_home_nodes):,} residential and {len(handler.raw_job_nodes):,} job buildings in parallel...", end=" ", flush=True)
     
@@ -437,7 +520,8 @@ def build_demand():
                 "popIds": [],
                 "is_airport": True,
                 "grids": item["grids"],
-                "is_special": item.get("is_special", False) 
+                "is_special": item.get("is_special", False),
+                "connections": 0
             })
         else:
             points.append({
@@ -446,7 +530,8 @@ def build_demand():
                 "jobs": item["capacity"], 
                 "residents": 0, 
                 "popIds": [],
-                "is_special": item.get("is_special", False) 
+                "is_special": item.get("is_special", False),
+                "connections": 0
             })
     
     for item in final_home_nodes:
@@ -455,12 +540,11 @@ def build_demand():
             "location": [item["lon"], item["lat"]], 
             "jobs": 0, 
             "residents": item["capacity"], 
-            "popIds": [],
-            "is_special": False 
+            "popIds": []
         })
 
-    print("Mapping OSM buildings to the INSPIRE 1x1km Grid...", end=" ", flush=True)
-    grid_homes, grid_jobs = {}, {}
+    print("Mapping OSM buildings and zones to the INSPIRE 1x1km Grid...", end=" ", flush=True)
+    grid_homes, grid_jobs, grid_landuse = {}, {}, {}
 
     for h in [p for p in points if p["residents"] > 0]:
         x, y = transformer.transform(h["location"][0], h["location"][1])
@@ -484,8 +568,12 @@ def build_demand():
             else:
                 grid_jobs[gid]["normal"].append(j)
 
+    for lu in handler.raw_landuse:
+        x, y = transformer.transform(lu["lon"], lu["lat"])
+        gid = f"1kmN{int(y // 1000)}E{int(x // 1000)}"
+        grid_landuse.setdefault(gid, []).append(lu)
+
     print("OK")
-    print(f"Mapped {len(grid_homes)} residential grids and {len(grid_jobs)} job grids.")
     
     pending_routes = []
     
@@ -496,44 +584,99 @@ def build_demand():
             headers = next(reader)
             wo_idx, ao_idx, pendler_idx = headers.index("wo_1km"), headers.index("ao_1km"), headers.index("gesamtpendler")
 
-            def assign_commuters(target_jobs, target_count, current_homes):
-                if target_count == 0 or not target_jobs or not current_homes: return
-                max_affordable = target_count // MIN_ROUTE_SIZE
-                num_conn = min(MAX_HUBS_PER_GRID, len(current_homes), len(target_jobs), max_affordable)
+            def spawn_synthetic_job(grid_id, is_special, target_jobs_list):
+                if grid_id in grid_landuse and grid_landuse[grid_id]:
+                    zone = random.choice(grid_landuse[grid_id])
+                    j_lat = zone["lat"] + random.uniform(-0.001, 0.001)
+                    j_lon = zone["lon"] + random.uniform(-0.001, 0.001)
+                elif target_jobs_list:
+                    base = random.choice(target_jobs_list)
+                    j_lat = base["location"][1] + random.uniform(-0.002, 0.002)
+                    j_lon = base["location"][0] + random.uniform(-0.002, 0.002)
+                else:
+                    return False
+                    
+                new_job = {
+                    "id": f"dp_job_synthetic_{len(points)}_{random.randint(1000,9999)}",
+                    "location": [j_lon, j_lat],
+                    "jobs": 100, 
+                    "residents": 0,
+                    "popIds": [],
+                    "is_special": is_special,
+                    "connections": 0
+                }
+                points.append(new_job)
+                target_jobs_list.append(new_job)
+                return True
+
+            def assign_commuters(target_jobs, target_count, current_homes, grid_id, is_special):
+                if not current_homes: return
                 
-                if num_conn == 0: return
-                commuters_per_route = target_count // num_conn
-                if commuters_per_route < MIN_ROUTE_SIZE: return
+                commuters_to_assign = target_count
+                iterations = 0 
                 
-                # REVISED: Gravity Model Evaluation
-                potential_routes = []
-                for h in current_homes:
-                    for j in target_jobs:
-                        dist = math.hypot(h["location"][0] - j["location"][0], h["location"][1] - j["location"][1]) * 111000
-                        dist = max(dist, 10.0) # Prevent zero division
-                        weight = (h.get("residents", 1) * j.get("jobs", 1)) / (dist ** 2)
-                        potential_routes.append((weight, h, j))
+                while commuters_to_assign >= MIN_ROUTE_SIZE and iterations < 50:
+                    iterations += 1
+                    
+                    if not target_jobs:
+                        if not spawn_synthetic_job(grid_id, is_special, target_jobs): break
+                    
+                    max_affordable = commuters_to_assign // MIN_ROUTE_SIZE
+                    num_conn = min(MAX_HUBS_PER_GRID, len(current_homes), max_affordable)
+                    if num_conn == 0: break
+                    commuters_per_route = commuters_to_assign // num_conn
+                    
+                    potential_routes = []
+                    for h in current_homes:
+                        for j in target_jobs:
+                            if j.setdefault("connections", 0) >= MAX_CONNECTIONS_PER_JOB: continue
+                            dist = math.hypot(h["location"][0] - j["location"][0], h["location"][1] - j["location"][1]) * 111000
+                            dist = max(dist, 10.0) 
+                            weight = (h.get("residents", 1) * j.get("jobs", 1)) / (dist ** 2)
+                            potential_routes.append((weight, h, j))
+                            
+                    if not potential_routes:
+                        # All current jobs in this grid are maxed out, spawn a new one and loop again
+                        if not spawn_synthetic_job(grid_id, is_special, target_jobs): break
+                        continue 
                         
-                # Sort by highest gravitational pull
-                potential_routes.sort(key=lambda x: x[0], reverse=True)
-                
-                assigned_pairs = set()
-                connections_made = 0
-                
-                for weight, h, j in potential_routes:
-                    pair_id = f"{id(h)}_{id(j)}"
-                    if pair_id not in assigned_pairs:
-                        assigned_pairs.add(pair_id)
-                        pop_id = f"pop_{len(pending_routes):06d}"
-                        pending_routes.append({
-                            "pop_id": pop_id,
-                            "h": h,
-                            "j": j,
-                            "commuters_per_route": commuters_per_route
-                        })
-                        connections_made += 1
+                    potential_routes.sort(key=lambda x: x[0], reverse=True)
+                    
+                    assigned_pairs = set()
+                    connections_made = 0
+                    
+                    for weight, h, j in potential_routes:
+                        pair_id = f"{id(h)}_{id(j)}"
                         
-                    if connections_made >= num_conn:
+                        # Determine if this job hub is an airport
+                        is_airport = j.get("is_airport", False)
+                        
+                        # Bypass connection limit if it is an airport
+                        if not is_airport and j.setdefault("connections", 0) >= MAX_CONNECTIONS_PER_JOB:
+                            continue
+                            
+                        if pair_id not in assigned_pairs:
+                            assigned_pairs.add(pair_id)
+                            # Only increment connections if it is NOT an airport
+                            if not is_airport:
+                                j["connections"] += 1
+                            
+                            pop_id = f"pop_{len(pending_routes):06d}"
+                            pending_routes.append({
+                                "pop_id": pop_id,
+                                "h": h,
+                                "j": j,
+                                "commuters_per_route": commuters_per_route
+                            })
+                            connections_made += 1
+                            
+                        if connections_made >= num_conn:
+                            break
+                            
+                    assigned_commuters = connections_made * commuters_per_route
+                    commuters_to_assign -= assigned_commuters
+                    
+                    if connections_made == 0:
                         break
 
             for row in reader:
@@ -561,8 +704,8 @@ def build_demand():
                         special_count = 0
                         normal_count = count
 
-                    assign_commuters(jobs_special, special_count, homes_in_cell)
-                    assign_commuters(jobs_normal, normal_count, homes_in_cell)
+                    assign_commuters(jobs_special, special_count, homes_in_cell, ao, True)
+                    assign_commuters(jobs_normal, normal_count, homes_in_cell, ao, False)
 
         print("OK")
         print(f"Prepared {len(pending_routes):,} total route queries.")
@@ -574,95 +717,94 @@ def build_demand():
     # =========================================================
     # NEW: THREADED OSRM FETCHING WITH RETRY ADAPTER & SNAPPING
     # =========================================================
-    print(f"\nResolving precise distances and times via OSRM ({OSRM_URL})...")
-    
-    session = requests.Session()
-    raw_pops = []
-    
-    def process_route_query(route_data):
-        h = route_data["h"]
-        j = route_data["j"]
-        src_lon, src_lat = h["location"][0], h["location"][1]
-        dst_lon, dst_lat = j["location"][0], j["location"][1]
+    start_osrm_container()
+    try:
+        print(f"\nResolving precise distances and times via OSRM ({OSRM_URL})...")
         
-        # Adding radiuses=1000;1000 to force OSRM to snap to the nearest road up to 1km away
-        url = f"{OSRM_URL}/route/v1/driving/{src_lon},{src_lat};{dst_lon},{dst_lat}?overview=false&radiuses=1000;1000"
+        session = requests.Session()
+        raw_pops = []
         
-        try:
-            response = session.get(url, timeout=3.0)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("code") == "Ok" and len(data.get("routes", [])) > 0:
-                    route_info = data["routes"][0]
-                    
-                    return ({
-                        "id": route_data["pop_id"], 
+        def process_route_query(route_data):
+            h = route_data["h"]
+            j = route_data["j"]
+            src_lon, src_lat = h["location"][0], h["location"][1]
+            dst_lon, dst_lat = j["location"][0], j["location"][1]
+            
+            url = f"{OSRM_URL}/route/v1/driving/{src_lon},{src_lat};{dst_lon},{dst_lat}?overview=false&radiuses=1000;1000"
+            
+            try:
+                response = session.get(url, timeout=3.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("code") == "Ok" and len(data.get("routes", [])) > 0:
+                        route_info = data["routes"][0]
+                        
+                        return ({
+                            "id": route_data["pop_id"], 
+                            "residenceId": h["id"], 
+                            "jobId": j["id"],
+                            "drivingSeconds": int(route_info.get("duration", 0)), 
+                            "drivingDistance": int(route_info.get("distance", 0))
+                        }, h, j, route_data["commuters_per_route"]), None 
+                    else:
+                        pass 
+                else:
+                    return None, route_data
+            except requests.RequestException:
+                return None, route_data
+                
+            dist = math.hypot(src_lon - dst_lon, src_lat - dst_lat) * 111000
+            return ({
+                "id": route_data["pop_id"], 
+                "residenceId": h["id"], 
+                "jobId": j["id"],
+                "drivingSeconds": int(dist / 8.3), 
+                "drivingDistance": int(dist)
+            }, h, j, route_data["commuters_per_route"]), None
+
+        pending_queue = pending_routes.copy()
+        attempt = 1
+        
+        while pending_queue:
+            print(f"\n--- OSRM Fetch Pass {attempt} ({len(pending_queue):,} routes pending) ---")
+            failed_queue = []
+            completed_in_pass = 0
+            
+            with ThreadPoolExecutor(max_workers=50) as executor:
+                futures = {executor.submit(process_route_query, task): task for task in pending_queue}
+                
+                for future in as_completed(futures):
+                    result, failed_task = future.result()
+                    if failed_task is not None:
+                        failed_queue.append(failed_task)
+                    else:
+                        raw_pops.append(result)
+                        completed_in_pass += 1
+                        if completed_in_pass % 10000 == 0:
+                            print(f" -> Resolved {completed_in_pass:,} routes in this pass...")
+
+            if not failed_queue:
+                break
+                
+            if len(failed_queue) == len(pending_queue):
+                print("\n[WARNING] All remaining routes failed connection. Container might be down.")
+                print("Forcing Euclidean math fallback to clear the queue and prevent infinite loop.")
+                for task in failed_queue:
+                    h, j = task["h"], task["j"]
+                    dist = math.hypot(h["location"][0] - j["location"][0], h["location"][1] - j["location"][1]) * 111000
+                    raw_pops.append(({
+                        "id": task["pop_id"], 
                         "residenceId": h["id"], 
                         "jobId": j["id"],
-                        "drivingSeconds": int(route_info.get("duration", 0)), 
-                        "drivingDistance": int(route_info.get("distance", 0))
-                    }, h, j, route_data["commuters_per_route"]), None # None indicates success
-                else:
-                    # 200 OK, but no route found even with snapping. Retrying won't fix map data.
-                    pass 
-            else:
-                # 4xx or 5xx server error, trigger a retry
-                return None, route_data
-        except requests.RequestException:
-            # Timeout or connection error, trigger a retry
-            return None, route_data
-            
-        # Immediate Fallback (Executed if no route found but server was responsive)
-        dist = math.hypot(src_lon - dst_lon, src_lat - dst_lat) * 111000
-        return ({
-            "id": route_data["pop_id"], 
-            "residenceId": h["id"], 
-            "jobId": j["id"],
-            "drivingSeconds": int(dist / 8.3), 
-            "drivingDistance": int(dist)
-        }, h, j, route_data["commuters_per_route"]), None
+                        "drivingSeconds": int(dist / 8.3), 
+                        "drivingDistance": int(dist)
+                    }, h, j, task["commuters_per_route"]))
+                break
 
-    pending_queue = pending_routes.copy()
-    attempt = 1
-    
-    while pending_queue:
-        print(f"\n--- OSRM Fetch Pass {attempt} ({len(pending_queue):,} routes pending) ---")
-        failed_queue = []
-        completed_in_pass = 0
-        
-        with ThreadPoolExecutor(max_workers=50) as executor:
-            futures = {executor.submit(process_route_query, task): task for task in pending_queue}
-            
-            for future in as_completed(futures):
-                result, failed_task = future.result()
-                if failed_task is not None:
-                    failed_queue.append(failed_task)
-                else:
-                    raw_pops.append(result)
-                    completed_in_pass += 1
-                    if completed_in_pass % 10000 == 0:
-                        print(f" -> Resolved {completed_in_pass:,} routes in this pass...")
-
-        if not failed_queue:
-            break
-            
-        if len(failed_queue) == len(pending_queue):
-            print("\n[WARNING] All remaining routes failed connection. Container might be down.")
-            print("Forcing Euclidean math fallback to clear the queue and prevent infinite loop.")
-            for task in failed_queue:
-                h, j = task["h"], task["j"]
-                dist = math.hypot(h["location"][0] - j["location"][0], h["location"][1] - j["location"][1]) * 111000
-                raw_pops.append(({
-                    "id": task["pop_id"], 
-                    "residenceId": h["id"], 
-                    "jobId": j["id"],
-                    "drivingSeconds": int(dist / 8.3), 
-                    "drivingDistance": int(dist)
-                }, h, j, task["commuters_per_route"]))
-            break
-
-        pending_queue = failed_queue
-        attempt += 1
+            pending_queue = failed_queue
+            attempt += 1
+    finally:
+        stop_osrm_container()
 
     print("\nOK - OSRM Routing Complete")
 
@@ -671,6 +813,7 @@ def build_demand():
     for p in points:
         p.pop("is_airport", None)
         p.pop("grids", None)
+        p.pop("connections", None)
         p["residents"], p["jobs"] = 0, 0
 
     for pop, h, j, raw_size in raw_pops:

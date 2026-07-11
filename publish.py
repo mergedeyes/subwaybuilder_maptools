@@ -73,7 +73,7 @@ def main():
         raise ValueError(f"Version not found in {CONFIG_PATH}")
 
     # Initialize GitHub client
-    g = github.Auth.Token(TOKEN)
+    g = Github(TOKEN)
     repo = g.get_repo(REPO_NAME)
 
     # 2. Check if the map is new or updated by looking for its JSON file
