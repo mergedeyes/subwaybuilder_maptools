@@ -1,6 +1,7 @@
 # Custom DEPOT Map Tools written in Python
 ### Valid as of v1.5.0
 # DISCLAIMER
+- This is a wrapper for [depot](https://github.com/Subway-Builder-Modded/depot).
 - BUILT FOR GERMANY, PLEASE MAKE SURE THAT OSM BUILDING TAGGING AND YOUR O/D MATRIX IS PRECISE!
 ---
 ## Setting up .env file
