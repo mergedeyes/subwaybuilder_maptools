@@ -1,8 +1,7 @@
 # Custom DEPOT Map Tools written in Python
-### Valid as of v1.1.0
+### Valid as of v1.5.0
 # DISCLAIMER
 - BUILT FOR GERMANY, PLEASE MAKE SURE THAT OSM BUILDING TAGGING AND YOUR O/D MATRIX IS PRECISE!
-- OSRM based drivingtime will be implemented in the following days. Currently only straight line distance.
 ---
 ## Setting up .env file
 ```
