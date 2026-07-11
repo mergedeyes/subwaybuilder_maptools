@@ -42,7 +42,6 @@ RAW_BASE_DIR = os.getenv("RAW_BASE_DIR")
 if not RAW_BASE_DIR:
     raise ValueError("RAW_BASE_DIR is missing from your .env file!")
 
-# OSRM Endpoint with a default fallback
 OSRM_URL = os.getenv("OSRM_URL", "http://localhost:5000")
 
 # ==========================================
@@ -52,9 +51,9 @@ OUTPUT_FILE = f"{RAW_BASE_DIR}/{CITY_CODE}/demand_data.json"
 AIRPORT_GEOJSON = f"{RAW_BASE_DIR}/{CITY_CODE}/runways_taxiways.geojson"
 CUSTOM_HUBS_JSON = f"{RAW_BASE_DIR}/{CITY_CODE}/custom_hubs.json"
 
-MAX_HUBS_PER_GRID = 100     # Increase this to get more bubbles per 1x1km cell
-MIN_ROUTE_SIZE = 10         # Minimum commuters per line
-MIN_COMMUTER_THRESHOLD = 10 # All O/D data less than this threshold get dropped
+MAX_HUBS_PER_GRID = 100     
+MIN_ROUTE_SIZE = 10         
+MIN_COMMUTER_THRESHOLD = 10 
 
 MAX_ROUTES_LIMIT = 200_000     
 
@@ -62,7 +61,6 @@ RES_MERGE_RADIUS = 0.2
 JOB_MERGE_RADIUS = 0.3
 AIRPORT_EDGE_SNAP_RADIUS_METERS = 1000
 
-# Ratio of commuters heading to 'special' buildings (0.2 = 20%)
 SPECIAL_DEMAND_SPLIT = 0.2
 
 CAPACITY_JOBS = (500, 3000)
@@ -489,7 +487,6 @@ def build_demand():
     print("OK")
     print(f"Mapped {len(grid_homes)} residential grids and {len(grid_jobs)} job grids.")
     
-    # NEW: We will pool pending routes here first instead of parsing them immediately
     pending_routes = []
     
     print(f"\nParsing real-world commuter matrix from {COMMUTERS_CSV_FILE}...", end=" ", flush=True)
@@ -500,26 +497,44 @@ def build_demand():
             wo_idx, ao_idx, pendler_idx = headers.index("wo_1km"), headers.index("ao_1km"), headers.index("gesamtpendler")
 
             def assign_commuters(target_jobs, target_count, current_homes):
-                if target_count == 0 or not target_jobs: return
+                if target_count == 0 or not target_jobs or not current_homes: return
                 max_affordable = target_count // MIN_ROUTE_SIZE
-                
                 num_conn = min(MAX_HUBS_PER_GRID, len(current_homes), len(target_jobs), max_affordable)
                 
                 if num_conn == 0: return
                 commuters_per_route = target_count // num_conn
                 if commuters_per_route < MIN_ROUTE_SIZE: return
                 
-                homes_sorted = sorted(current_homes, key=lambda x: x.get("residents", 0), reverse=True)
-                jobs_sorted = sorted(target_jobs, key=lambda x: x.get("jobs", 0), reverse=True)
-
-                for h, j in zip(homes_sorted[:num_conn], jobs_sorted[:num_conn]):
-                    pop_id = f"pop_{len(pending_routes):06d}"
-                    pending_routes.append({
-                        "pop_id": pop_id,
-                        "h": h,
-                        "j": j,
-                        "commuters_per_route": commuters_per_route
-                    })
+                # REVISED: Gravity Model Evaluation
+                potential_routes = []
+                for h in current_homes:
+                    for j in target_jobs:
+                        dist = math.hypot(h["location"][0] - j["location"][0], h["location"][1] - j["location"][1]) * 111000
+                        dist = max(dist, 10.0) # Prevent zero division
+                        weight = (h.get("residents", 1) * j.get("jobs", 1)) / (dist ** 2)
+                        potential_routes.append((weight, h, j))
+                        
+                # Sort by highest gravitational pull
+                potential_routes.sort(key=lambda x: x[0], reverse=True)
+                
+                assigned_pairs = set()
+                connections_made = 0
+                
+                for weight, h, j in potential_routes:
+                    pair_id = f"{id(h)}_{id(j)}"
+                    if pair_id not in assigned_pairs:
+                        assigned_pairs.add(pair_id)
+                        pop_id = f"pop_{len(pending_routes):06d}"
+                        pending_routes.append({
+                            "pop_id": pop_id,
+                            "h": h,
+                            "j": j,
+                            "commuters_per_route": commuters_per_route
+                        })
+                        connections_made += 1
+                        
+                    if connections_made >= num_conn:
+                        break
 
             for row in reader:
                 if len(row) < 3: continue
@@ -557,7 +572,7 @@ def build_demand():
         return
 
     # =========================================================
-    # NEW: THREADED OSRM FETCHING
+    # NEW: THREADED OSRM FETCHING WITH RETRY ADAPTER & SNAPPING
     # =========================================================
     print(f"\nResolving precise distances and times via OSRM ({OSRM_URL})...")
     
@@ -570,49 +585,86 @@ def build_demand():
         src_lon, src_lat = h["location"][0], h["location"][1]
         dst_lon, dst_lat = j["location"][0], j["location"][1]
         
-        duration = 0
-        distance = 0
+        # Adding radiuses=1000;1000 to force OSRM to snap to the nearest road up to 1km away
+        url = f"{OSRM_URL}/route/v1/driving/{src_lon},{src_lat};{dst_lon},{dst_lat}?overview=false&radiuses=1000;1000"
         
-        # 1. Try hitting the OSRM backend
         try:
-            url = f"{OSRM_URL}/route/v1/driving/{src_lon},{src_lat};{dst_lon},{dst_lat}?overview=false"
-            response = session.get(url, timeout=2.0)
+            response = session.get(url, timeout=3.0)
             if response.status_code == 200:
                 data = response.json()
                 if data.get("code") == "Ok" and len(data.get("routes", [])) > 0:
                     route_info = data["routes"][0]
-                    duration = int(route_info.get("duration", 0))
-                    distance = int(route_info.get("distance", 0))
+                    
+                    return ({
+                        "id": route_data["pop_id"], 
+                        "residenceId": h["id"], 
+                        "jobId": j["id"],
+                        "drivingSeconds": int(route_info.get("duration", 0)), 
+                        "drivingDistance": int(route_info.get("distance", 0))
+                    }, h, j, route_data["commuters_per_route"]), None # None indicates success
+                else:
+                    # 200 OK, but no route found even with snapping. Retrying won't fix map data.
+                    pass 
+            else:
+                # 4xx or 5xx server error, trigger a retry
+                return None, route_data
         except requests.RequestException:
-            pass
+            # Timeout or connection error, trigger a retry
+            return None, route_data
             
-        # 2. Fallback to straight-line Euclidean math if OSRM failed, timed out, or returned no valid route
-        if distance == 0:
-            dist = math.hypot(src_lon - dst_lon, src_lat - dst_lat) * 111000
-            distance = int(dist)
-            duration = int(dist / 8.3)
-            
+        # Immediate Fallback (Executed if no route found but server was responsive)
+        dist = math.hypot(src_lon - dst_lon, src_lat - dst_lat) * 111000
         return ({
             "id": route_data["pop_id"], 
             "residenceId": h["id"], 
             "jobId": j["id"],
-            "drivingSeconds": duration, 
-            "drivingDistance": distance
-        }, h, j, route_data["commuters_per_route"])
+            "drivingSeconds": int(dist / 8.3), 
+            "drivingDistance": int(dist)
+        }, h, j, route_data["commuters_per_route"]), None
 
-    # Map the queries to a thread pool to avoid massive bottlenecks
-    # Tweak max_workers depending on how capable your OSRM machine/container is
-    completed_count = 0
-    with ThreadPoolExecutor(max_workers=50) as executor:
-        futures = {executor.submit(process_route_query, task): task for task in pending_routes}
+    pending_queue = pending_routes.copy()
+    attempt = 1
+    
+    while pending_queue:
+        print(f"\n--- OSRM Fetch Pass {attempt} ({len(pending_queue):,} routes pending) ---")
+        failed_queue = []
+        completed_in_pass = 0
         
-        for future in as_completed(futures):
-            raw_pops.append(future.result())
-            completed_count += 1
-            if completed_count % 10000 == 0:
-                print(f" -> Resolved {completed_count:,}/{len(pending_routes):,} routes...")
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            futures = {executor.submit(process_route_query, task): task for task in pending_queue}
+            
+            for future in as_completed(futures):
+                result, failed_task = future.result()
+                if failed_task is not None:
+                    failed_queue.append(failed_task)
+                else:
+                    raw_pops.append(result)
+                    completed_in_pass += 1
+                    if completed_in_pass % 10000 == 0:
+                        print(f" -> Resolved {completed_in_pass:,} routes in this pass...")
 
-    print("OK - OSRM Routing Complete")
+        if not failed_queue:
+            break
+            
+        if len(failed_queue) == len(pending_queue):
+            print("\n[WARNING] All remaining routes failed connection. Container might be down.")
+            print("Forcing Euclidean math fallback to clear the queue and prevent infinite loop.")
+            for task in failed_queue:
+                h, j = task["h"], task["j"]
+                dist = math.hypot(h["location"][0] - j["location"][0], h["location"][1] - j["location"][1]) * 111000
+                raw_pops.append(({
+                    "id": task["pop_id"], 
+                    "residenceId": h["id"], 
+                    "jobId": j["id"],
+                    "drivingSeconds": int(dist / 8.3), 
+                    "drivingDistance": int(dist)
+                }, h, j, task["commuters_per_route"]))
+            break
+
+        pending_queue = failed_queue
+        attempt += 1
+
+    print("\nOK - OSRM Routing Complete")
 
     print("\nApplying strict real-world commuter counts to physical buildings...", end=" ", flush=True)
 
