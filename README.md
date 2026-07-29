@@ -1,5 +1,5 @@
 # Custom DEPOT Map Tools written in Python
-### Valid as of v2.0.0
+### Valid as of v3.0.0
 # DISCLAIMER
 - This is a wrapper for [depot](https://github.com/Subway-Builder-Modded/depot).
 - BUILT FOR GERMANY, PLEASE MAKE SURE THAT OSM BUILDING TAGGING AND YOUR O/D MATRIX IS PRECISE!
@@ -99,3 +99,30 @@ This is handled by `run_demand_pipeline.py`, wrapping two composable pipeline st
       ```
 13. Publish your map to Github manually, OR:
 14. Edit the parameters of publish.py and automatically publish your map to your Github-Repo, also generating a update.json for the SubwayBuilderModded Registry for your map automatically.
+
+## Scripts overview
+
+Everything above walks through running these in order. Here's what each one actually does, for reference.
+
+### Scripts you run directly
+
+| Script                     | What it does       |
+| --------------------------- |:-------------|
+| `build.py`                   | Wraps depot's `MapGen` to generate the map's non-demand files (PMTiles, roads, building footprints, labels) - see [Generating a map](#generating-a-map) above.        |
+| `run_demand_pipeline.py`     | Wraps `DemandGen` to generate the full demand dataset (who commutes where) from OSM buildings + your O/D matrix - see [Generating demand data](#generating-demand-data) above.        |
+| `rerun_enrichment.py`        | Example script re-running just `DemandGen`'s enrichment stage - use after tuning `HUB_SIZE_RATIO` or hand-editing special demand, instead of the full `run_demand_pipeline.py` run.        |
+| `open_maps.py`                | Opens every detected airport's approximate location in your browser, so you can find its real terminal coordinates for `custom_hubs.json` (step 7).        |
+| `ship.py`                     | Packages a city's generated files into a game-ready ZIP, bumping `config.json`'s version as requested (`none`/`major`/`minor`/`patch`).        |
+| `publish.py`                  | Uploads a shipped ZIP to your maps GitHub repo and updates that map's `update.json` entry for the SubwayBuilderModded Registry.        |
+
+### Supporting modules
+
+These aren't run directly - `run_demand_pipeline.py` and `generate_demand_qzm_local.py` import them.
+
+| Module                          | What it does       |
+| --------------------------------- |:-------------|
+| `generate_demand_qzm_local.py`     | Does the actual demand generation work: parses OSM buildings, snaps airport hubs, assigns real commuter counts from your O/D matrix, and (via its enrichment stage) clusters/consolidates points and adds named special demand. `run_demand_pipeline.py` is the entry point for this - see [Generating demand data](#generating-demand-data) above.        |
+| `enrich_utils.py`                  | Shared helpers for the enrichment stage: merging nearby points into fewer/bigger hubs, keeping hubs out of parks/green space, and adding named special demand (universities, hospitals, stadiums, etc.) with real routed commutes.        |
+| `zensus_utils.py`                  | Optional: if you've downloaded Destatis's Zensus 2022 100m population grid, calibrates residential building capacity against real measured population counts instead of relying on OSM-tag heuristics alone. No-op if the file isn't present.        |
+| `bbox_utils.py`                    | Looks up (or interactively captures and saves) each city's bounding box, so you only ever enter it once per city.        |
+| `special_demand_utils.py`          | Scans OSM for named "landmark" buildings (universities, hospitals, stadiums, museums, zoos, significant schools/clinics) and keeps them as candidates for named special demand, with a real capacity/enrollment number per entry.        |
