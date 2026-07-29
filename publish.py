@@ -19,8 +19,8 @@ REPO_NAME = "mergedeyes/subwaybuilder_maps"
 TARGET_BRANCH = "main"
 
 # File paths
-LOCAL_ZIP_PATH = f"./{os.getenv("OUTPUT_DIR")}/{CITY_CODE}/{CITY_CODE}.zip"
-CONFIG_PATH = f"./{os.getenv("RAW_BASE_DIR")}/{CITY_CODE}/config.json"
+LOCAL_ZIP_PATH = f"./{os.getenv('OUTPUT_DIR', 'Map_ZIPs')}/{CITY_CODE}/{CITY_CODE}.zip"
+CONFIG_PATH = f"./{os.getenv('RAW_BASE_DIR', 'raw_map_files')}/{CITY_CODE}/config.json"
 REPO_JSON_PATH = f"releases/{CITY_CODE}_update.json"
 
 def calculate_sha256(file_path):

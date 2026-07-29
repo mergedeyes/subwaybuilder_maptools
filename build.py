@@ -6,20 +6,16 @@ from depot.maps import MapGen
 
 load_dotenv()
 
-# Parse the bounding box from the .env file
-bbox_env = os.getenv("BBOX")
-if not bbox_env:
-    raise ValueError("BBOX not found in .env file")
-bbox = [float(coord.strip()) for coord in bbox_env.split(',')]
 city_code = os.getenv("CITY_CODE")
 if not city_code:
     raise ValueError("CITY_CODE is missing from your .env file!")
-osmpbf_file = os.getenv("OSMPBF")
-if not osmpbf_file:
-    raise ValueError("OSMPBF is missing from your .env file!")
-RAW_BASE_DIR = os.getenv("RAW_BASE_DIR")
-if not RAW_BASE_DIR:
-    raise ValueError("RAW_BASE_DIR is missing from your .env file!")
+osmpbf_file = os.getenv("OSMPBF", "germany-latest.osm.pbf")
+RAW_BASE_DIR = os.getenv("RAW_BASE_DIR", "raw_map_files")
+
+# BBOX is no longer read from .env - it's looked up (or interactively captured
+# and saved) per city code. See bbox_utils.py.
+from bbox_utils import get_bbox
+bbox = list(get_bbox(city_code, RAW_BASE_DIR))
 
 map_builder = MapGen(
     city=city_code,

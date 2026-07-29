@@ -14,7 +14,7 @@ cligj @ file:///home/conda/feedstock_root/build_artifacts/cligj_1733749956636/wo
 contourpy @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_contourpy_1769155964/work
 cryptography==49.0.0
 cycler @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_cycler_1764466758/work
-depot @ file:///home/jan/Projekte/Games/SubwayBuilder_Mods/depot
+-e git+https://github.com/Subway-Builder-Modded/depot.git@c32631f8660f9e3d8173aa43e259d5898fe393e1#egg=depot
 dotenv==0.9.9
 duckdb @ file:///home/conda/feedstock_root/build_artifacts/python-duckdb-split_1774281060263/work
 exceptiongroup @ file:///home/conda/feedstock_root/build_artifacts/exceptiongroup_1763918002538/work

@@ -11,10 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 city_code = os.getenv("CITY_CODE").upper()
-name = os.getenv("CITY_NAME")
-id = os.getenv("CITY_NAME").lower()
-source_dir = Path(f"{os.getenv("RAW_BASE_DIR")}/{city_code}")
-dest_dir = Path(f"{os.getenv("OUTPUT_DIR")}/{city_code}")
+source_dir = Path(f"{os.getenv('RAW_BASE_DIR', 'raw_map_files')}/{city_code}")
+dest_dir = Path(f"{os.getenv('OUTPUT_DIR', 'Map_ZIPs')}/{city_code}")
 dest_dir.mkdir(parents=True, exist_ok=True)
 
 required_files = [
