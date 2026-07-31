@@ -1,5 +1,5 @@
 # Custom DEPOT Map Tools written in Python
-### Valid as of v4.0.0
+### Valid as of v5.0.0
 # DISCLAIMER
 - This is a wrapper for [depot](https://github.com/Subway-Builder-Modded/depot).
 - BUILT FOR GERMANY, PLEASE MAKE SURE THAT OSM BUILDING TAGGING AND YOUR O/D MATRIX IS PRECISE!
@@ -48,6 +48,8 @@ This is handled by `build.py`, a thin wrapper around depot's own `depot.maps.Map
 ### Generating demand data
 
 This is handled by `run_demand_pipeline.py`, wrapping two composable pipeline stages exposed by `generate_demand_qzm_local.py` behind a small `DemandGen` class (`demand_gen`, already constructed for `CITY_CODE` at the bottom of the file) - the same build.py/`MapGen`-style shape, just for demand instead of map geometry.
+
+Job hubs and residential hubs are consolidated independently and never merge into each other - `RES_SIZE_RATIO`/`JOB_SIZE_RATIO` in `.env` (see above) control each side's hub size/count on its own. If commuters end up spread across too many small, scattered job destinations to plan a profitable line around, lower `JOB_SIZE_RATIO` to fold jobs into fewer, bigger hubs without changing residential granularity at all.
 
 #### `DemandGen` inputs
 | Parameter                 | Description       |
