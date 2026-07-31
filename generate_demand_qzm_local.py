@@ -21,12 +21,7 @@ from shapely import wkt as shapely_wkt
 from pyproj import Transformer
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-# Only ever imported, never edited - src/depot is off-limits per this
-# project's CLAUDE.md rule ("we only use these methods and functions in our
-# scripts located in maps/").
 from depot.demand import DemandData
-
 from bbox_utils import get_bbox
 from special_demand_utils import detect_and_confirm_special_demand, _open_url_detached
 from enrich_utils import (cluster_and_consolidate, add_named_special_demand,
@@ -132,7 +127,6 @@ def _find_zensus_grid_csv():
               f"if that isn't the right file.")
     return os.path.join(script_dir, candidates[0])
 
-
 OUTPUT_FILE = f"{CITY_RAW_DIR}demand_data.json"
 AIRPORT_GEOJSON = f"{CITY_RAW_DIR}runways_taxiways.geojson"
 CUSTOM_HUBS_JSON = f"{CITY_RAW_DIR}custom_hubs.json"
@@ -210,7 +204,7 @@ MIN_ROUTE_SIZE = 10
 MIN_COMMUTER_THRESHOLD = 10 
 
 MAX_ROUTES_LIMIT = 500_000
-MAX_CONNECTIONS_PER_JOB = 200   # Cap on residential hubs pointing to a single job hub
+MAX_CONNECTIONS_PER_JOB = 150   # Cap on residential hubs pointing to a single job hub
 
 # Below this many routes, a 100%-failed pass just means "no valid road route
 # exists for this last handful of pairs" (or a one-off timeout) - normal at
@@ -502,7 +496,6 @@ class OSMHandler(osmium.SimpleHandler):
         super().__init__()
         self.raw_job_nodes = []
         self.raw_home_nodes = []
-        self.raw_landuse = []
         # Real polygon geometry for green-space ways (park/nature_reserve/
         # water_park/theme_park/zoo/aquarium/national_park boundary) - kept
         # around after use (unlike _green_space_edge_location(), which only
@@ -526,12 +519,6 @@ class OSMHandler(osmium.SimpleHandler):
         if lon < self.min_lon: self.min_lon = lon
         if lon > self.max_lon: self.max_lon = lon
         
-        # Parse landuse for synthetic spawning
-        landuse = tags.get('landuse')
-        if landuse in ['commercial', 'industrial', 'retail']:
-            self.raw_landuse.append({"lat": lat, "lon": lon, "type": landuse})
-            return # Don't double count landuse polygons as physical buildings unless they have building tags
-
         if tags.get('floating') == 'yes' or tags.get('location') in ['water', 'underwater']:
             return
             
@@ -960,7 +947,6 @@ def build_base_demand(autofill_special_demand=None):
     
     print(f"\nMap Bounds Detected: {width_km:.1f}km x {height_km:.1f}km")
     print(f"Total Area: {map_area_sqkm:.1f} sq/km")
-    print(f"Extracted {len(handler.raw_landuse):,} commercial/industrial zones for procedural overflow.")
 
     print(f"Clustering {len(handler.raw_home_nodes):,} residential and {len(handler.raw_job_nodes):,} job buildings in parallel...", end=" ", flush=True)
     
@@ -1215,7 +1201,7 @@ def build_base_demand(autofill_special_demand=None):
         })
 
     print("Mapping OSM buildings and zones to the INSPIRE 1x1km Grid...", end=" ", flush=True)
-    grid_homes, grid_jobs, grid_landuse = {}, {}, {}
+    grid_homes, grid_jobs = {}, {}
 
     for h in [p for p in points if p["residents"] > 0]:
         x, y = transformer.transform(h["location"][0], h["location"][1])
@@ -1239,11 +1225,6 @@ def build_base_demand(autofill_special_demand=None):
             else:
                 grid_jobs[gid]["normal"].append(j)
 
-    for lu in handler.raw_landuse:
-        x, y = transformer.transform(lu["lon"], lu["lat"])
-        gid = f"1kmN{int(y // 1000)}E{int(x // 1000)}"
-        grid_landuse.setdefault(gid, []).append(lu)
-
     print("OK")
     
     pending_routes = []
@@ -1255,37 +1236,30 @@ def build_base_demand(autofill_special_demand=None):
             headers = next(reader)
             wo_idx, ao_idx, pendler_idx = headers.index("wo_1km"), headers.index("ao_1km"), headers.index("gesamtpendler")
 
-            def spawn_synthetic_job(grid_id, is_special, target_jobs_list):
-                if grid_id in grid_landuse and grid_landuse[grid_id]:
-                    zone = random.choice(grid_landuse[grid_id])
-                    j_lat = zone["lat"] + random.uniform(-0.001, 0.001)
-                    j_lon = zone["lon"] + random.uniform(-0.001, 0.001)
-                elif target_jobs_list:
-                    base = random.choice(target_jobs_list)
-                    j_lat = base["location"][1] + random.uniform(-0.002, 0.002)
-                    j_lon = base["location"][0] + random.uniform(-0.002, 0.002)
-                else:
-                    return False
-                    
-                new_job = {
-                    "id": f"dp_job_synthetic_{len(points)}_{random.randint(1000,9999)}",
-                    "location": [j_lon, j_lat],
-                    "jobs": 100, 
-                    "residents": 0,
-                    "popIds": [],
-                    "is_special": is_special,
-                    "connections": 0
-                }
-                points.append(new_job)
-                target_jobs_list.append(new_job)
-                return True
+            # NOTE: this used to spawn a synthetic (not OSM-derived) job point
+            # here when a grid cell had no real job building to route to, or
+            # when every real job building in it was already at
+            # MAX_CONNECTIONS_PER_JOB - jittered either into a nearby
+            # commercial/industrial/retail landuse zone, or near an existing
+            # job point in the same grid if no zone existed. Removed: jobs
+            # must now land ONLY on real OSM job buildings (or named special
+            # demand landmarks) - never on an invented point, even one
+            # loosely anchored to a real landuse zone. When a grid cell's
+            # real job capacity is exhausted, assign_commuters() below now
+            # just stops assigning for that (wo, ao) pair instead of
+            # fabricating a place to put the rest - that portion of the CSV's
+            # commuter count for this pair goes unassigned/dropped rather
+            # than being placed somewhere not backed by real building data.
+            # dropped_commuters below tracks exactly how much this costs on
+            # real data - see its summary print after the CSV finishes.
+            dropped_commuters = [0, 0]  # [no real job building at all, real jobs all at MAX_CONNECTIONS_PER_JOB]
 
             def assign_commuters(target_jobs, target_count, current_homes, grid_id, is_special):
                 if not current_homes: return
-                
+
                 commuters_to_assign = target_count
-                iterations = 0 
-                
+                iterations = 0
+
                 while commuters_to_assign >= MIN_ROUTE_SIZE and iterations < 50:
                     iterations += 1
 
@@ -1296,7 +1270,10 @@ def build_base_demand(autofill_special_demand=None):
                     if remaining_budget <= 0: break
 
                     if not target_jobs:
-                        if not spawn_synthetic_job(grid_id, is_special, target_jobs): break
+                        # No real job building in this destination grid cell
+                        # at all - nothing to route these commuters to.
+                        dropped_commuters[0] += commuters_to_assign
+                        break
 
                     max_affordable = commuters_to_assign // MIN_ROUTE_SIZE
                     num_conn = min(MAX_HUBS_PER_GRID, len(current_homes), max_affordable, remaining_budget)
@@ -1312,9 +1289,11 @@ def build_base_demand(autofill_special_demand=None):
                             potential_routes.append((weight, h, j))
 
                     if not potential_routes:
-                        # All current jobs in this grid are maxed out, spawn a new one and loop again
-                        if not spawn_synthetic_job(grid_id, is_special, target_jobs): break
-                        continue
+                        # Every real job building in this grid cell is
+                        # already at MAX_CONNECTIONS_PER_JOB - no real
+                        # building left here to route the remainder to.
+                        dropped_commuters[1] += commuters_to_assign
+                        break
 
                     potential_routes.sort(key=lambda x: x[0], reverse=True)
 
@@ -1406,6 +1385,13 @@ def build_base_demand(autofill_special_demand=None):
 
         print("OK")
         print(f"Prepared {len(pending_routes):,} total route queries.")
+        total_dropped = sum(dropped_commuters)
+        if total_dropped:
+            print(f"  [INFO] {total_dropped:,} commuter(s) from the CSV couldn't be assigned to a "
+                  f"real OSM job building and were dropped rather than placed on an invented point "
+                  f"({dropped_commuters[0]:,} in grid cells with no real job building at all, "
+                  f"{dropped_commuters[1]:,} where every real job building was already at "
+                  f"MAX_CONNECTIONS_PER_JOB={MAX_CONNECTIONS_PER_JOB}).")
         _mark_phase("Airport snapping + grid mapping + CSV commuter assignment")
     except FileNotFoundError:
         print("ERROR")
