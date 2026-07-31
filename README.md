@@ -1,17 +1,27 @@
 # Custom DEPOT Map Tools written in Python
-### Valid as of v5.1.0
+### Valid as of v5.1.1
 # DISCLAIMER
 - This is a wrapper for [depot](https://github.com/Subway-Builder-Modded/depot).
 - BUILT FOR GERMANY, PLEASE MAKE SURE THAT OSM BUILDING TAGGING AND YOUR O/D MATRIX IS PRECISE!
 ---
 ## Setting up .env file
 ```
-# Only CITY_CODE has to change per city. Everything below already has a
-# working default baked into the scripts - only uncomment/edit if your
-# setup actually differs.
+# CITY_CODE, CITY_NAME, MAP_DESCRIPTION and MAP_CREATOR all have to change
+# per city/map - everything below that already has a working default baked
+# into the scripts, and only needs uncommenting/editing if your setup
+# actually differs.
 
 # 3-DIGIT CITY CODE
 CITY_CODE = "FRA"
+
+# --- Required for config.json (written automatically at the end of every
+# run_demand_pipeline.py / rerun_enrichment.py run - no separate script) ---
+CITY_NAME = "Frankfurt"
+# {CITY_NAME} and {POPULATION_ROUNDED} are replaced with CITY_NAME above and
+# the real population (summed from demand_data.json) rounded to the nearest
+# 50,000, formatted with dots (e.g. 1.750.000).
+MAP_DESCRIPTION = "Bring the subway to {CITY_NAME}! Over {POPULATION_ROUNDED} commuters want to go to their workplace and it's your job to get them there!"
+MAP_CREATOR = "MergedEyes"
 
 # Only needed for publish.py / release_maptools.py.
 GITHUB_TOKEN = "<Github_Token_Classic>"
@@ -64,7 +74,7 @@ Job hubs and residential hubs are consolidated independently and never merge int
 | `run_all`            | Full pipeline: OSM parsing, green-space capture, optional Zensus calibration, airport hub snapping, and base OSRM routing (`build_base_demand()`); then cluster/consolidate and named special demand (`enrich_demand()`). This is what `python run_demand_pipeline.py` runs by default.                                 |
 | `run_enrich_only`    | Re-runs ONLY the enrichment stage (cluster/consolidate + named special demand) against the existing base checkpoint (`demand_data_base.json`) - skips the much slower OSM parsing / airport snapping / base OSRM routing steps. Use after tuning `RES_SIZE_RATIO`/`JOB_SIZE_RATIO` in `.env` or hand-editing special-demand data. See `rerun_enrichment.py` for a ready-to-run example.       |
 
-`run_all` must complete at least once for a given city before `run_enrich_only` has a base checkpoint to enrich.
+Both methods also rebuild `config.json` afterward (via `config_utils.py`) from `CITY_NAME`/`MAP_DESCRIPTION`/`MAP_CREATOR` in `.env` plus the population summed fresh from `demand_data.json` - there's no separate config-generation step or script to run by hand. `run_all` must complete at least once for a given city before `run_enrich_only` has a base checkpoint to enrich.
 
     python run_demand_pipeline.py                # DemandGen.run_all()
     python rerun_enrichment.py                    # DemandGen.run_enrich_only()
@@ -77,35 +87,18 @@ Job hubs and residential hubs are consolidated independently and never merge int
 4. Get your commuters data in the INSPIRE-Grid format. [Germany](https://mobilithek.info/offers/767359761906577408)
 ### Running the scripts
 5. Get your initial map data with depot, running build.py (Check examples directory within depot (HEL.py/LAXM.py))
-6. Prepare the data, running run_demand_pipeline.py
+6. Set `CITY_NAME`/`MAP_DESCRIPTION`/`MAP_CREATOR` in `.env` (see [Setting up .env file](#setting-up-env-file) above) - required before this next step, since it now also writes `config.json` for you. Prepare the data, running run_demand_pipeline.py
 7. Set correct coordinates for airport points, opening Google Maps and entering the correct cords into ./raw_map_files/CITY_CODE/custom_hubs.json, running open_maps.py
-8. Generate the demand data, running run_demand_pipeline.py again.
-9. Create a config.json inside ./raw_map_files/CITY_CODE/ based on the [official documentation](https://www.subwaybuilder.com/docs/v1.0.0/api-reference/cities).
-```
-{
-    "name": "Frankfurt",
-    "code": "FRA",
-    "description": "Bring the subway to Frankfurt! Over 1.200.000 commuters want to go to their workplace and it's your job to get them there! Based on real-life demand data from mobilithek.info/offers/767359761906577408 (Latest access: 6th July 2026).",
-    "population": 1247000,
-    "initialViewState": {
-        "zoom": 16,
-        "latitude": 50.11,
-        "longitude": 8.67,
-        "bearing": 0
-    },
-    "creator": "MergedEyes",
-    "version": "1.0.0"
-}
-```
-10. Run "ship.py none", to create the ZIP file. (none: No version change, major: Bumb major version, minor: Bump minor version, patch: Bump patch version inside config.json)
-11. Import your ZIP into Railyard (locally) and test your map ingame.
-12. (Optional) Make changes to the map, demand configuration, description, etc. Run build.py (only if you change the initial map/city), run_demand_pipeline.py, ship.py <none/major/minor/patch> again.
-    - If you only changed something in the enrichment stage - `RES_SIZE_RATIO`/`JOB_SIZE_RATIO` in `.env`, or hand-edited a special-demand JSON file - you don't need the full run_demand_pipeline.py run again. Run `rerun_enrichment.py` instead (see [`DemandGen` methods](#demandgen-methods) above), which skips the much slower OSM parsing / airport snapping / base OSRM routing steps:
+8. Generate the demand data, running run_demand_pipeline.py again. `config.json` is regenerated automatically at the end of this run too, with the final population - no separate config step needed. Reference for the full `config.json` schema: [official documentation](https://www.subwaybuilder.com/docs/v1.0.0/api-reference/cities).
+9. Run "ship.py none", to create the ZIP file. (none: No version change, major: Bumb major version, minor: Bump minor version, patch: Bump patch version inside config.json)
+10. Import your ZIP into Railyard (locally) and test your map ingame.
+11. (Optional) Make changes to the map, demand configuration, description, etc. Run build.py (only if you change the initial map/city), run_demand_pipeline.py, ship.py <none/major/minor/patch> again.
+    - If you only changed something in the enrichment stage - `RES_SIZE_RATIO`/`JOB_SIZE_RATIO` or `CITY_NAME`/`MAP_DESCRIPTION`/`MAP_CREATOR` in `.env`, or hand-edited a special-demand JSON file - you don't need the full run_demand_pipeline.py run again. Run `rerun_enrichment.py` instead (see [`DemandGen` methods](#demandgen-methods) above), which skips the much slower OSM parsing / airport snapping / base OSRM routing steps and still regenerates `config.json`:
       ```
       python rerun_enrichment.py
       ```
-13. Publish your map to Github manually, OR:
-14. Edit the parameters of publish.py and automatically publish your map to your Github-Repo, also generating a update.json for the SubwayBuilderModded Registry for your map automatically.
+12. Publish your map to Github manually, OR:
+13. Edit the parameters of publish.py and automatically publish your map to your Github-Repo, also generating a update.json for the SubwayBuilderModded Registry for your map automatically.
 
 ## Scripts overview
 
@@ -116,8 +109,8 @@ Everything above walks through running these in order. Here's what each one actu
 | Script                     | What it does       |
 | --------------------------- |:-------------|
 | `build.py`                   | Wraps depot's `MapGen` to generate the map's non-demand files (PMTiles, roads, building footprints, labels) - see [Generating a map](#generating-a-map) above.        |
-| `run_demand_pipeline.py`     | Wraps `DemandGen` to generate the full demand dataset (who commutes where) from OSM buildings + your O/D matrix - see [Generating demand data](#generating-demand-data) above.        |
-| `rerun_enrichment.py`        | Example script re-running just `DemandGen`'s enrichment stage - use after tuning `RES_SIZE_RATIO`/`JOB_SIZE_RATIO` or hand-editing special demand, instead of the full `run_demand_pipeline.py` run.        |
+| `run_demand_pipeline.py`     | Wraps `DemandGen` to generate the full demand dataset (who commutes where) from OSM buildings + your O/D matrix, and writes `config.json` afterward - see [Generating demand data](#generating-demand-data) above.        |
+| `rerun_enrichment.py`        | Example script re-running just `DemandGen`'s enrichment stage (and `config.json`) - use after tuning `RES_SIZE_RATIO`/`JOB_SIZE_RATIO`, `CITY_NAME`/`MAP_DESCRIPTION`/`MAP_CREATOR`, or hand-editing special demand, instead of the full `run_demand_pipeline.py` run.        |
 | `open_maps.py`                | Opens every detected airport's approximate location in your browser, so you can find its real terminal coordinates for `custom_hubs.json` (step 7).        |
 | `ship.py`                     | Packages a city's generated files into a game-ready ZIP, bumping `config.json`'s version as requested (`none`/`major`/`minor`/`patch`).        |
 | `publish.py`                  | Uploads a shipped ZIP to your maps GitHub repo and updates that map's `update.json` entry for the SubwayBuilderModded Registry.        |
@@ -130,6 +123,7 @@ These aren't run directly - `run_demand_pipeline.py` and `generate_demand_qzm_lo
 | --------------------------------- |:-------------|
 | `generate_demand_qzm_local.py`     | Does the actual demand generation work: parses OSM buildings, snaps airport hubs, assigns real commuter counts from your O/D matrix, and (via its enrichment stage) clusters/consolidates points and adds named special demand. `run_demand_pipeline.py` is the entry point for this - see [Generating demand data](#generating-demand-data) above.        |
 | `enrich_utils.py`                  | Shared helpers for the enrichment stage: merging nearby points into fewer/bigger hubs, keeping hubs out of parks/green space, and adding named special demand (universities, hospitals, stadiums, etc.) with real routed commutes.        |
+| `config_utils.py`                  | Builds `config.json` from `CITY_NAME`/`MAP_DESCRIPTION`/`MAP_CREATOR` in `.env` plus the real population summed from `demand_data.json` and the city's saved bbox center - called automatically by `DemandGen.run_all()`/`run_enrich_only()`, never run directly.        |
 | `zensus_utils.py`                  | Optional: if you've downloaded Destatis's Zensus 2022 100m population grid, calibrates residential building capacity against real measured population counts instead of relying on OSM-tag heuristics alone. No-op if the file isn't present.        |
 | `bbox_utils.py`                    | Looks up (or interactively captures and saves) each city's bounding box, so you only ever enter it once per city.        |
 | `special_demand_utils.py`          | Scans OSM for named "landmark" buildings (universities, hospitals, stadiums, museums, zoos, significant schools/clinics) and keeps them as candidates for named special demand, with a real capacity/enrollment number per entry.        |

@@ -26,6 +26,18 @@ if not city_code:
     raise ValueError("CITY_CODE is missing from your .env file!")
 RAW_BASE_DIR = os.getenv("RAW_BASE_DIR", "raw_map_files")
 
+# config.json fields - see config_utils.py for how these are used.
+CITY_NAME = os.getenv("CITY_NAME")
+MAP_DESCRIPTION = os.getenv("MAP_DESCRIPTION")
+MAP_CREATOR = os.getenv("MAP_CREATOR")
+for var_name, value in [
+    ("CITY_NAME", CITY_NAME),
+    ("MAP_DESCRIPTION", MAP_DESCRIPTION),
+    ("MAP_CREATOR", MAP_CREATOR),
+]:
+    if not value:
+        raise ValueError(f"{var_name} is missing from your .env file!")
+
 from bbox_utils import get_bbox
 bbox = list(get_bbox(city_code, RAW_BASE_DIR))
 
@@ -55,18 +67,39 @@ class DemandGen:
     def run_all(self):
         """Full pipeline: OSM parsing + base OSRM routing
         (build_base_demand()), then cluster/consolidate + named special
-        demand (enrich_demand())."""
+        demand (enrich_demand()). Regenerates config.json afterward."""
         from generate_demand_qzm_local import all as _all
-        return _all(autofill_special_demand=self.autofill_special_demand)
+        result = _all(autofill_special_demand=self.autofill_special_demand)
+        if result:
+            self._write_config()
+        return result
 
     def run_enrich_only(self):
         """Re-runs only the enrichment stage against the existing base
         checkpoint (demand_data_base.json) - use after tuning
-        HUB_SIZE_RATIO or hand-editing special-demand data, without
-        repeating the much slower OSM parsing / airport snapping / base
-        OSRM routing steps."""
+        RES_SIZE_RATIO/JOB_SIZE_RATIO or hand-editing special-demand data,
+        without repeating the much slower OSM parsing / airport snapping /
+        base OSRM routing steps. Regenerates config.json afterward."""
         from generate_demand_qzm_local import demand as _demand
-        return _demand(autofill_special_demand=self.autofill_special_demand)
+        result = _demand(autofill_special_demand=self.autofill_special_demand)
+        if result:
+            self._write_config()
+        return result
+
+    def _write_config(self):
+        """Rebuilds config.json from .env (CITY_NAME/MAP_DESCRIPTION/
+        MAP_CREATOR) plus the population summed fresh from demand_data.json
+        - see config_utils.py. Runs automatically after run_all()/
+        run_enrich_only() succeed, so config.json can never drift out of
+        sync with the actual demand data."""
+        from config_utils import write_config
+        return write_config(
+            city_code=self.city,
+            raw_base_dir=RAW_BASE_DIR,
+            city_name=CITY_NAME,
+            description_template=MAP_DESCRIPTION,
+            creator=MAP_CREATOR,
+        )
 
 
 demand_gen = DemandGen(
