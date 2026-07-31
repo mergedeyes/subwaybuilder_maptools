@@ -166,19 +166,28 @@ GREEN_SPACE_CACHE_FILE = f"{CITY_RAW_DIR}green_space_cache.json"
 # routing loop below for whether that ceiling is actually CPU-bound.
 OSRM_THREADS = os.getenv("OSRM_THREADS", "16")
 
-# Single dial for "more, smaller hubs" vs "fewer, bigger hubs" - set
-# HUB_SIZE_RATIO=4 in .env for hubs roughly 4x smaller (and correspondingly
-# ~4x more numerous) than the defaults below; HUB_SIZE_RATIO=0.5 for
-# roughly 2x bigger/fewer. 1 (default) reproduces the original tuning
-# exactly.
+# Two independent dials for "more, smaller hubs" vs "fewer, bigger hubs" -
+# one for RESIDENTIAL (commuter-origin) hubs, one for JOB hubs. Split into
+# two (instead of one shared HUB_SIZE_RATIO) specifically so job-hub
+# fragmentation can be tuned on its own: a line design gets hard to make
+# profitable when commuters are scattered across too many small, separate
+# job destinations - raising JOB_SIZE_RATIO's effective hub size (i.e.
+# lowering JOB_SIZE_RATIO, or raising RES_SIZE_RATIO relative to it)
+# consolidates jobs into fewer, bigger destinations a line can actually
+# target, independent of how granular residential origins stay.
 #
-# Applied as TWO different scale factors, not one flat division, because
-# the constants below aren't all the same kind of quantity:
-#   - _HUB_SIZE_SCALE (= 1/ratio) divides POPULATION/COUNT caps directly
+# RES_SIZE_RATIO=4 in .env for residential hubs roughly 4x smaller (and
+# correspondingly ~4x more numerous) than the defaults below;
+# JOB_SIZE_RATIO=0.5 for job hubs roughly 2x bigger/fewer. 1 (default, for
+# either) reproduces the original shared tuning exactly.
+#
+# Each is applied as TWO different scale factors, not one flat division,
+# because the constants below aren't all the same kind of quantity:
+#   - the SIZE scale (= 1/ratio) divides POPULATION/COUNT caps directly
 #     (max_point_size, agglomerate_small_threshold, cluster_points()'s
 #     pop-count thresholds) - a "4x smaller hub" should hold ~1/4 the
 #     people, so these need a straight 1/ratio.
-#   - _HUB_RADIUS_SCALE (= 1/sqrt(ratio)) divides SPATIAL radii/distances
+#   - the RADIUS scale (= 1/sqrt(ratio)) divides SPATIAL radii/distances
 #     (RES_MERGE_RADIUS, JOB_MERGE_RADIUS, cluster_points()'s buffer_meters,
 #     agglomerate_pops()'s distance thresholds) - these control the AREA
 #     that gets merged into one hub, and area scales with radius^2. Halving
@@ -187,11 +196,14 @@ OSRM_THREADS = os.getenv("OSRM_THREADS", "16")
 #     achieve the same ~ratio-times reduction in per-hub population that
 #     the flat caps get directly. Using 1/ratio on radii too would
 #     overshoot to a ratio^2 reduction in practice.
-HUB_SIZE_RATIO = float(os.getenv("HUB_SIZE_RATIO", "1"))
-if HUB_SIZE_RATIO <= 0:
-    raise ValueError(f"HUB_SIZE_RATIO must be positive, got {HUB_SIZE_RATIO}")
-_HUB_SIZE_SCALE = 1.0 / HUB_SIZE_RATIO
-_HUB_RADIUS_SCALE = 1.0 / math.sqrt(HUB_SIZE_RATIO)
+def _load_size_ratio(env_name):
+    ratio = float(os.getenv(env_name, "1"))
+    if ratio <= 0:
+        raise ValueError(f"{env_name} must be positive, got {ratio}")
+    return ratio, 1.0 / ratio, 1.0 / math.sqrt(ratio)
+
+RES_SIZE_RATIO, _RES_SIZE_SCALE, _RES_RADIUS_SCALE = _load_size_ratio("RES_SIZE_RATIO")
+JOB_SIZE_RATIO, _JOB_SIZE_SCALE, _JOB_RADIUS_SCALE = _load_size_ratio("JOB_SIZE_RATIO")
 
 MAX_HUBS_PER_GRID = 300
 MIN_ROUTE_SIZE = 10         
@@ -206,21 +218,39 @@ MAX_CONNECTIONS_PER_JOB = 200   # Cap on residential hubs pointing to a single j
 # possible container outage when a large batch fails outright.
 OUTAGE_WARNING_MIN_QUEUE = 25
 
-RES_MERGE_RADIUS = 0.2 * _HUB_RADIUS_SCALE
-JOB_MERGE_RADIUS = 0.3 * _HUB_RADIUS_SCALE
+RES_MERGE_RADIUS = 0.2 * _RES_RADIUS_SCALE
+JOB_MERGE_RADIUS = 0.3 * _JOB_RADIUS_SCALE
 AIRPORT_EDGE_SNAP_RADIUS_METERS = 1000
 
-# Everything downstream that decides final hub (point) size, scaled by the
-# same HUB_SIZE_RATIO - see cluster_and_consolidate()'s call site in
-# build_demand() for where these get used. Population caps use
-# _HUB_SIZE_SCALE directly; spatial radii/distances use _HUB_RADIUS_SCALE -
-# see the HUB_SIZE_RATIO comment above for why the two differ.
-HUB_MAX_POINT_SIZE = max(1, round(2000 * _HUB_SIZE_SCALE))
-HUB_AGGLOMERATE_SMALL_THRESHOLD = max(1, round(100 * _HUB_SIZE_SCALE))
-HUB_AGGLOMERATE_DISTANCE_NONCBD = 0.01 * _HUB_RADIUS_SCALE
-HUB_AGGLOMERATE_DISTANCE_CBD = 0.006 * _HUB_RADIUS_SCALE
-HUB_CLUSTER_MAX_POP_THRESHOLD = CLUSTER_MAX_POP_THRESHOLD * _HUB_SIZE_SCALE
-HUB_CLUSTER_BUFFER_METERS = CLUSTER_BUFFER_METERS * _HUB_RADIUS_SCALE
+# Everything downstream that decides final hub (point) size, scaled by
+# RES_SIZE_RATIO/JOB_SIZE_RATIO respectively - see cluster_and_consolidate()'s
+# call site in enrich_demand() for where these get used. Population caps use
+# the SIZE scale directly; spatial radii/distances use the RADIUS scale - see
+# the ratio comment above for why the two differ.
+#
+# RES_MAX_POINT_SIZE/JOB_MAX_POINT_SIZE: max residents/jobs a single point
+# can hold before enforce_max_point_size() splits it - applied per-point
+# based on whichever of residents/jobs that point actually holds (see
+# enforce_max_point_size()'s docstring in enrich_utils.py).
+RES_MAX_POINT_SIZE = max(1, round(2000 * _RES_SIZE_SCALE))
+JOB_MAX_POINT_SIZE = max(1, round(2000 * _JOB_SIZE_SCALE))
+
+# agglomerate_pops() only ever groups small RESIDENTIAL origin flows (by
+# shared job destination) into new super-origin points - see depot's
+# agglomerate_pops() docstring - so these scale with the residential ratio
+# only, not job.
+RES_AGGLOMERATE_SMALL_THRESHOLD = max(1, round(100 * _RES_SIZE_SCALE))
+RES_AGGLOMERATE_DISTANCE_NONCBD = 0.01 * _RES_RADIUS_SCALE
+RES_AGGLOMERATE_DISTANCE_CBD = 0.006 * _RES_RADIUS_SCALE
+
+# depot's own cluster_points() spatially merges points regardless of type in
+# a single pass - to give jobs and residents truly independent tuning here,
+# cluster_and_consolidate() now runs it TWICE (job points only, then
+# residential points only - see enrich_utils.py), once with each of these.
+RES_CLUSTER_MAX_POP_THRESHOLD = CLUSTER_MAX_POP_THRESHOLD * _RES_SIZE_SCALE
+RES_CLUSTER_BUFFER_METERS = CLUSTER_BUFFER_METERS * _RES_RADIUS_SCALE
+JOB_CLUSTER_MAX_POP_THRESHOLD = CLUSTER_MAX_POP_THRESHOLD * _JOB_SIZE_SCALE
+JOB_CLUSTER_BUFFER_METERS = CLUSTER_BUFFER_METERS * _JOB_RADIUS_SCALE
 
 SPECIAL_DEMAND_SPLIT = 0.2
 
@@ -826,8 +856,8 @@ def build_base_demand(autofill_special_demand=None):
     Base stage of the modular pipeline: OSM parsing, green-space capture,
     optional Zensus calibration, airport mega-hub snapping, INSPIRE grid
     mapping, QZM commuter assignment, and base OSRM routing - everything
-    that's slow to regenerate and doesn't depend on HUB_SIZE_RATIO tuning or
-    hand-edited special-demand data. Saves a checkpoint to BASE_OUTPUT_FILE
+    that's slow to regenerate and doesn't depend on RES_SIZE_RATIO/
+    JOB_SIZE_RATIO tuning or hand-edited special-demand data. Saves a checkpoint to BASE_OUTPUT_FILE
     (raw points/pops, no clustering/consolidation/special demand yet) plus a
     green-space polygon cache, both consumed by enrich_demand(). Returns
     True on success, False on any early-exit condition (no buildings found,
@@ -1619,8 +1649,8 @@ def enrich_demand(autofill_special_demand=None):
     container lifecycle and re-detects special demand fresh (cheap once the
     per-city JSON is already populated - see special_demand_utils.py), so it
     never needs to touch OSM parsing, airport snapping, or base OSRM routing
-    at all. Use this (via demand()) after only changing HUB_SIZE_RATIO or
-    hand-editing a special-demand JSON, instead of re-running the full (much
+    at all. Use this (via demand()) after only changing RES_SIZE_RATIO/
+    JOB_SIZE_RATIO or hand-editing a special-demand JSON, instead of re-running the full (much
     slower) base pipeline for no reason. Returns True on success, False if
     no base checkpoint exists yet to enrich.
 
@@ -1676,12 +1706,15 @@ def enrich_demand(autofill_special_demand=None):
 
         print("\n[1/2] Cleaning up base demand (no external data used here)...")
         cluster_and_consolidate(demand, green_index=green_index,
-                                agglomerate_small_threshold=HUB_AGGLOMERATE_SMALL_THRESHOLD,
-                                agglomerate_distance_noncbd=HUB_AGGLOMERATE_DISTANCE_NONCBD,
-                                agglomerate_distance_cbd=HUB_AGGLOMERATE_DISTANCE_CBD,
-                                max_point_size=HUB_MAX_POINT_SIZE,
-                                cluster_max_pop_threshold=HUB_CLUSTER_MAX_POP_THRESHOLD,
-                                cluster_buffer_meters=HUB_CLUSTER_BUFFER_METERS)
+                                agglomerate_small_threshold=RES_AGGLOMERATE_SMALL_THRESHOLD,
+                                agglomerate_distance_noncbd=RES_AGGLOMERATE_DISTANCE_NONCBD,
+                                agglomerate_distance_cbd=RES_AGGLOMERATE_DISTANCE_CBD,
+                                res_max_point_size=RES_MAX_POINT_SIZE,
+                                job_max_point_size=JOB_MAX_POINT_SIZE,
+                                res_cluster_max_pop_threshold=RES_CLUSTER_MAX_POP_THRESHOLD,
+                                res_cluster_buffer_meters=RES_CLUSTER_BUFFER_METERS,
+                                job_cluster_max_pop_threshold=JOB_CLUSTER_MAX_POP_THRESHOLD,
+                                job_cluster_buffer_meters=JOB_CLUSTER_BUFFER_METERS)
         _mark_phase("cluster_and_consolidate (merge + agglomerate + cluster_points + caps)")
 
         if ready_special_demand:
@@ -1705,7 +1738,8 @@ def enrich_demand(autofill_special_demand=None):
             # Re-run the same cap here, now that nothing more will add to
             # these points.
             print("\nRe-capping point sizes inflated by newly added special demand...")
-            enforce_max_point_size(demand, max_point_size=HUB_MAX_POINT_SIZE, green_index=green_index)
+            enforce_max_point_size(demand, res_max_point_size=RES_MAX_POINT_SIZE,
+                                   job_max_point_size=JOB_MAX_POINT_SIZE, green_index=green_index)
             _mark_phase("re-cap point sizes after landmarks")
         else:
             print("\n[2/2] No named special demand points with capacity data yet - skipping.")
@@ -1748,8 +1782,8 @@ def all(autofill_special_demand=None):
 def demand(autofill_special_demand=None):
     """
     Re-runs ONLY the enrichment stage against the existing base checkpoint
-    (BASE_OUTPUT_FILE) - use this after changing HUB_SIZE_RATIO, hand-
-    editing a special-demand JSON, or tweaking enrich_utils.py, when the raw
+    (BASE_OUTPUT_FILE) - use this after changing RES_SIZE_RATIO/
+    JOB_SIZE_RATIO, hand-editing a special-demand JSON, or tweaking enrich_utils.py, when the raw
     OSM/routing data hasn't changed and re-running the full (much slower)
     base pipeline would just reproduce the same base checkpoint.
 

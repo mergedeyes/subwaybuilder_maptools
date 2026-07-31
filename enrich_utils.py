@@ -137,6 +137,23 @@ CLUSTER_MAX_POP_THRESHOLD = np.array([25, 50, 75, 200, 500, 5000, 15000, np.inf]
 CLUSTER_BUFFER_METERS = np.array([750, 500, 250, 150, 100, 75, 60, 50])
 
 
+def _is_job_point(point):
+    """
+    Classifies a point as job-type (True) or residential-type (False) for
+    the purposes of applying separate job/residential tuning - see
+    RES_SIZE_RATIO/JOB_SIZE_RATIO in generate_demand_qzm_local.py. Every
+    point is pure one or the other when first created (job hubs get
+    residents=0, residential hubs get jobs=0); ties (jobs == residents,
+    including both 0) go to residential, matching agglomerate_pops()'s own
+    SO_ points, which are always residential-only. A genuinely mixed point
+    can only occur if some earlier step merged a job and residential point
+    together (rare - see _merge_points_in_green_space()'s docstring) or from
+    a special-demand landmark's own residential_split; whichever side
+    dominates decides which cap applies.
+    """
+    return point["jobs"] > point["residents"]
+
+
 def cluster_and_consolidate(demand,
                              agglomerate_small_threshold=100,
                              # Halved from depot's own documented defaults
@@ -149,21 +166,28 @@ def cluster_and_consolidate(demand,
                              agglomerate_distance_cbd=0.006,
                              cbd_bbox=None,
                              max_pop_size=100,
-                             max_point_size=2000,
+                             res_max_point_size=2000,
+                             job_max_point_size=2000,
                              green_index=None,
-                             cluster_max_pop_threshold=None,
-                             cluster_buffer_meters=None):
+                             res_cluster_max_pop_threshold=None,
+                             res_cluster_buffer_meters=None,
+                             job_cluster_max_pop_threshold=None,
+                             job_cluster_buffer_meters=None):
     """
     Cleans up demand's points/pops in place using only data already present -
     no external stats needed. Mutates and also returns `demand`.
 
-    `cluster_max_pop_threshold`/`cluster_buffer_meters` override the module-
-    level CLUSTER_MAX_POP_THRESHOLD/CLUSTER_BUFFER_METERS defaults passed to
+    `res_cluster_max_pop_threshold`/`res_cluster_buffer_meters` and their
+    `job_` counterparts override the module-level
+    CLUSTER_MAX_POP_THRESHOLD/CLUSTER_BUFFER_METERS defaults passed to
     depot's cluster_points() - exposed as parameters (rather than just using
-    the module constants directly) so a caller can scale them consistently
-    with max_point_size/agglomerate_small_threshold (e.g.
-    generate_demand_qzm_local.py's HUB_SIZE_RATIO) without having to import
-    and mutate the module constants themselves.
+    the module constants directly) so a caller can scale them independently
+    for job vs. residential points (e.g.
+    generate_demand_qzm_local.py's RES_SIZE_RATIO/JOB_SIZE_RATIO) without
+    having to import and mutate the module constants themselves.
+    `agglomerate_small_threshold`/`agglomerate_distance_*` only ever affect
+    residential origin flows (see depot's agglomerate_pops() docstring), so
+    there's no separate job version of those.
 
     If `green_index` (a GreenSpaceIndex) is given, it's used twice: right
     after cluster_points() to merge away any point - including depot's own
@@ -187,23 +211,46 @@ def cluster_and_consolidate(demand,
     # Runs AFTER agglomerate_pops() so it gets the last word over the *whole*
     # point set, including the new SO_ points agglomerate_pops() just
     # created - see the module comment above for why the order matters.
-    print("  Clustering overlapping points (Colin's method)...")
-    # Temporarily flip depot's own verbosity flag on for just this call -
-    # cluster_points() already has its own built-in "(N) Determining
-    # mergers: ..." round-by-round progress printing gated behind self.verb
-    # (which we otherwise keep False - see the DemandData(..., verb=False)
-    # comment where it's constructed). This is purely additive console
-    # output, no logic change - it's the only way to see how many of its
-    # up-to-5 rounds actually run without editing depot's own code (off-
-    # limits per this project's rule), which tells us whether the deep-copy-
-    # per-round cost is a real concern here or converges after round 1-2.
+    #
+    # Two SEPARATE passes (job points, then residential points) instead of
+    # one shared call - depot's cluster_points() merges purely by spatial
+    # proximity+size with no awareness of point type, so a single pass can
+    # (and on real data, does) merge a nearby job and residential point into
+    # one mixed blob. Splitting by type is the only way to give job hubs and
+    # residential hubs independent buffer/threshold tuning (see
+    # RES_SIZE_RATIO/JOB_SIZE_RATIO) - as a side effect, job and residential
+    # points can no longer merge into each other at all, which also directly
+    # helps the "too many small scattered job destinations" line-planning
+    # problem this was built for: job points now only ever consolidate with
+    # other job points.
     _prev_verb = demand.verb
     demand.verb = True
-    demand.cluster_points(
-        max_pop_threshold=(cluster_max_pop_threshold if cluster_max_pop_threshold is not None
-                           else CLUSTER_MAX_POP_THRESHOLD),
-        buffer_meters=(cluster_buffer_meters if cluster_buffer_meters is not None
-                      else CLUSTER_BUFFER_METERS))
+    job_points = [p for p in demand["points"] if _is_job_point(p)]
+    res_points = [p for p in demand["points"] if not _is_job_point(p)]
+
+    print(f"  Clustering overlapping job points ({len(job_points):,}, Colin's method)...")
+    if job_points:
+        demand["points"] = job_points
+        demand.cluster_points(
+            max_pop_threshold=(job_cluster_max_pop_threshold if job_cluster_max_pop_threshold is not None
+                               else CLUSTER_MAX_POP_THRESHOLD),
+            buffer_meters=(job_cluster_buffer_meters if job_cluster_buffer_meters is not None
+                          else CLUSTER_BUFFER_METERS))
+        job_points = demand["points"]
+    print(f"  -> {len(job_points):,} job point(s)")
+
+    print(f"  Clustering overlapping residential points ({len(res_points):,}, Colin's method)...")
+    if res_points:
+        demand["points"] = res_points
+        demand.cluster_points(
+            max_pop_threshold=(res_cluster_max_pop_threshold if res_cluster_max_pop_threshold is not None
+                               else CLUSTER_MAX_POP_THRESHOLD),
+            buffer_meters=(res_cluster_buffer_meters if res_cluster_buffer_meters is not None
+                          else CLUSTER_BUFFER_METERS))
+        res_points = demand["points"]
+    print(f"  -> {len(res_points):,} residential point(s)")
+
+    demand["points"] = job_points + res_points
     demand.verb = _prev_verb
     print(f"  -> {len(demand['points']):,} points / {len(demand['pops']):,} pops")
 
@@ -216,8 +263,9 @@ def cluster_and_consolidate(demand,
     demand.enforce_max_pop_size(max_pop_size)
     print(f"  -> {len(demand['pops']):,} pops")
 
-    print(f"  Capping point sizes at {max_point_size}...")
-    enforce_max_point_size(demand, max_point_size, green_index=green_index)
+    print(f"  Capping point sizes at {res_max_point_size} (residential) / {job_max_point_size} (jobs)...")
+    enforce_max_point_size(demand, res_max_point_size=res_max_point_size,
+                           job_max_point_size=job_max_point_size, green_index=green_index)
     print(f"  -> {len(demand['points']):,} points")
 
     return demand
@@ -506,15 +554,23 @@ def _merge_points_in_green_space(demand, green_index):
     return demand
 
 
-def enforce_max_point_size(demand, max_point_size=2000, spacing_meters=250, green_index=None):
+def enforce_max_point_size(demand, res_max_point_size=2000, job_max_point_size=2000,
+                           spacing_meters=250, green_index=None):
     """
     Splits any ordinary (non-special-demand) point whose residents+jobs
-    total exceeds max_point_size into multiple smaller points, each capped
-    at max_point_size, spread out around the original spot so siblings (and
-    any other point already on the map) stay at least ~spacing_meters apart
-    - see _place_split_point()'s docstring for how. Every pop keeps its
-    exact size - they're just divided up across more points near the
-    original location. Mutates and returns `demand`.
+    total exceeds its applicable cap into multiple smaller points, each
+    capped at that same limit, spread out around the original spot so
+    siblings (and any other point already on the map) stay at least
+    ~spacing_meters apart - see _place_split_point()'s docstring for how.
+    Every pop keeps its exact size - they're just divided up across more
+    points near the original location. Mutates and returns `demand`.
+
+    res_max_point_size/job_max_point_size are applied per-point based on
+    _is_job_point() (jobs > residents => job cap, otherwise residential cap)
+    - see its docstring for the rare mixed-point tie-break. Independent caps
+    (rather than one shared max_point_size) let job hubs and residential
+    hubs be tuned separately - see RES_SIZE_RATIO/JOB_SIZE_RATIO in
+    generate_demand_qzm_local.py.
 
     spacing_meters is a guess at a gap wide enough that two max-size circles
     won't visually overlap in-game - tune it up/down based on how it actually
@@ -550,6 +606,7 @@ def enforce_max_point_size(demand, max_point_size=2000, spacing_meters=250, gree
     total_orphaned_pop_ids = 0
     for point in demand["points"]:
         total = point["residents"] + point["jobs"]
+        max_point_size = job_max_point_size if _is_job_point(point) else res_max_point_size
         prefix = point["id"].split("_", 1)[0]
         if total <= max_point_size or prefix in special_prefixes:
             new_points.append(point)

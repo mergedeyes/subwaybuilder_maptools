@@ -1,5 +1,5 @@
 # Custom DEPOT Map Tools written in Python
-### Valid as of v3.0.0
+### Valid as of v4.0.0
 # DISCLAIMER
 - This is a wrapper for [depot](https://github.com/Subway-Builder-Modded/depot).
 - BUILT FOR GERMANY, PLEASE MAKE SURE THAT OSM BUILDING TAGGING AND YOUR O/D MATRIX IS PRECISE!
@@ -23,11 +23,16 @@ GITHUB_TOKEN = "<Github_Token_Classic>"
 # OUTPUT_DIR = "Map_ZIPs"
 # OSRM_URL = "http://localhost:5000"
 
-# Hub (demand point) size dial - 1 = original tuning. Set to 4 for hubs
-# roughly 4x smaller and ~4x more numerous; 0.5 for ~2x bigger/fewer.
-# Real-world commuter totals never change, only how finely they're split
-# across points.
-# HUB_SIZE_RATIO = "1"
+# Hub (demand point) size dials - independent for residential (commuter-
+# origin) hubs vs. job hubs. 1 = original tuning for that side. Set to 4 for
+# hubs roughly 4x smaller and ~4x more numerous on that side; 0.5 for ~2x
+# bigger/fewer. Real-world commuter totals never change, only how finely
+# they're split across points. Lower JOB_SIZE_RATIO if jobs are spread
+# across too many small destinations to design a profitable line around -
+# this consolidates jobs into fewer, bigger hubs without touching
+# residential granularity.
+# RES_SIZE_RATIO = "1"
+# JOB_SIZE_RATIO = "1"
 ```
 - The bounding box is no longer set in `.env` - it's looked up automatically per city and saved to `raw_map_files/CITY_CODE/CITY_CODE_MAP_DATA.json`. The first time you run a script for a city with no saved bbox yet, it'll prompt you to paste one in (e.g. copied from [boundingbox.klokantech.com](http://boundingbox.klokantech.com)).
 - Some city codes can be found [here](https://archive.bresser.de/download/City_Codes/CityCodes_en_BRESSER_v082023a.pdf).
@@ -55,7 +60,7 @@ This is handled by `run_demand_pipeline.py`, wrapping two composable pipeline st
 | Class method       | Description                                                    |
 | ------------------- |:--------------------------------------------------------------:|
 | `run_all`            | Full pipeline: OSM parsing, green-space capture, optional Zensus calibration, airport hub snapping, and base OSRM routing (`build_base_demand()`); then cluster/consolidate and named special demand (`enrich_demand()`). This is what `python run_demand_pipeline.py` runs by default.                                 |
-| `run_enrich_only`    | Re-runs ONLY the enrichment stage (cluster/consolidate + named special demand) against the existing base checkpoint (`demand_data_base.json`) - skips the much slower OSM parsing / airport snapping / base OSRM routing steps. Use after tuning `HUB_SIZE_RATIO` in `.env` or hand-editing special-demand data. See `rerun_enrichment.py` for a ready-to-run example.       |
+| `run_enrich_only`    | Re-runs ONLY the enrichment stage (cluster/consolidate + named special demand) against the existing base checkpoint (`demand_data_base.json`) - skips the much slower OSM parsing / airport snapping / base OSRM routing steps. Use after tuning `RES_SIZE_RATIO`/`JOB_SIZE_RATIO` in `.env` or hand-editing special-demand data. See `rerun_enrichment.py` for a ready-to-run example.       |
 
 `run_all` must complete at least once for a given city before `run_enrich_only` has a base checkpoint to enrich.
 
@@ -93,7 +98,7 @@ This is handled by `run_demand_pipeline.py`, wrapping two composable pipeline st
 10. Run "ship.py none", to create the ZIP file. (none: No version change, major: Bumb major version, minor: Bump minor version, patch: Bump patch version inside config.json)
 11. Import your ZIP into Railyard (locally) and test your map ingame.
 12. (Optional) Make changes to the map, demand configuration, description, etc. Run build.py (only if you change the initial map/city), run_demand_pipeline.py, ship.py <none/major/minor/patch> again.
-    - If you only changed something in the enrichment stage - `HUB_SIZE_RATIO` in `.env`, or hand-edited a special-demand JSON file - you don't need the full run_demand_pipeline.py run again. Run `rerun_enrichment.py` instead (see [`DemandGen` methods](#demandgen-methods) above), which skips the much slower OSM parsing / airport snapping / base OSRM routing steps:
+    - If you only changed something in the enrichment stage - `RES_SIZE_RATIO`/`JOB_SIZE_RATIO` in `.env`, or hand-edited a special-demand JSON file - you don't need the full run_demand_pipeline.py run again. Run `rerun_enrichment.py` instead (see [`DemandGen` methods](#demandgen-methods) above), which skips the much slower OSM parsing / airport snapping / base OSRM routing steps:
       ```
       python rerun_enrichment.py
       ```
@@ -110,7 +115,7 @@ Everything above walks through running these in order. Here's what each one actu
 | --------------------------- |:-------------|
 | `build.py`                   | Wraps depot's `MapGen` to generate the map's non-demand files (PMTiles, roads, building footprints, labels) - see [Generating a map](#generating-a-map) above.        |
 | `run_demand_pipeline.py`     | Wraps `DemandGen` to generate the full demand dataset (who commutes where) from OSM buildings + your O/D matrix - see [Generating demand data](#generating-demand-data) above.        |
-| `rerun_enrichment.py`        | Example script re-running just `DemandGen`'s enrichment stage - use after tuning `HUB_SIZE_RATIO` or hand-editing special demand, instead of the full `run_demand_pipeline.py` run.        |
+| `rerun_enrichment.py`        | Example script re-running just `DemandGen`'s enrichment stage - use after tuning `RES_SIZE_RATIO`/`JOB_SIZE_RATIO` or hand-editing special demand, instead of the full `run_demand_pipeline.py` run.        |
 | `open_maps.py`                | Opens every detected airport's approximate location in your browser, so you can find its real terminal coordinates for `custom_hubs.json` (step 7).        |
 | `ship.py`                     | Packages a city's generated files into a game-ready ZIP, bumping `config.json`'s version as requested (`none`/`major`/`minor`/`patch`).        |
 | `publish.py`                  | Uploads a shipped ZIP to your maps GitHub repo and updates that map's `update.json` entry for the SubwayBuilderModded Registry.        |
